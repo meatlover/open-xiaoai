@@ -13,15 +13,15 @@ export const kOpenXiaoAIConfig: OpenXiaoAIConfig = {
      * - ❌ https://api.openai.com/v1/（最后多了一个 /
      * - ❌ https://api.openai.com/v1/chat/completions（不需要加 /chat/completions）
      */
-    baseURL: "https://api.openai.com/v1",
+    baseURL: "https://api.302.ai/v1",
     /**
      * API 密钥
      */
-    apiKey: "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    apiKey: "sk-PQuOl8aw7GecSBOmu9duB0C4aLZhOEWD7X8HkCExrpvDJaVz",
     /**
      * 模型名称
      */
-    model: "gpt-4.1-mini",
+    model: "sophnet/Qwen3-235B-A22B-Instruct-2507",
   },
   prompt: {
     /**

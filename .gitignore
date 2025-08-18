@@ -48,4 +48,21 @@ __pycache__
 xiaozhi.json
 open-xiaoai.node
 
+# Security - Certificate and key files
+*.crt
+*.key
+*.p12
+*.cert
+*.pfx
+*.jks
+*.keystore
+*.backup
+
+# Development and test files  
+*.log
+test-*.sh
+*test*.py
+debug-*
+temp-*
+
 workspace/

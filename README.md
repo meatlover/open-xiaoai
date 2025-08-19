@@ -16,9 +16,9 @@
 
    #### 方式一：服务器中转模式（推荐）
    ```bash
-   cd packages/client-rust
+   cd examples/migpt
    
-   # 配置 LLM API（编辑 config.json）
+   # 配置 LLM API（编辑 config.ts）
    # 支持 OpenAI、302.ai、DeepSeek 等兼容 API
    
    # 启动 HTTP 服务器
@@ -107,15 +107,19 @@
 open-xiaoai/
 ├── docs/                          # 文档和教程
 ├── examples/
+├── examples/
 │   └── migpt/                     # MiGPT 集成示例
+│       ├── src/bin/
+│       │   └── http_server.rs     # HTTP 服务端（LLM 集成）
+│       ├── Dockerfile             # Docker 部署文件
+│       ├── deploy-binary.sh       # 二进制文件部署脚本
+│       └── deploy-docker.sh       # Docker 容器部署脚本
 ├── packages/
-│   ├── client-rust/               # 核心 HTTP 客户端/服务端
+│   ├── client-rust/               # 核心 HTTP 客户端
 │   │   ├── src/bin/
 │   │   │   ├── http_client.rs     # HTTP 客户端（运行在小爱音箱）
-│   │   │   ├── http_server.rs     # HTTP 服务端（LLM 集成）
 │   │   │   └── multi_mode_client.rs # 多模式客户端（支持直连/中转）
-│   │   ├── config.json            # LLM API 配置
-│   │   └── Dockerfile.http-server # Docker 部署文件
+│   │   └── config.json            # LLM API 配置
 │   ├── client-patch/              # 小爱音箱固件补丁
 │   └── flash-tool/                # 刷机工具
 └── workspace/                     # 开发和测试工具

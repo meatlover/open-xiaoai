@@ -1,0 +1,24 @@
+{
+  "_comment": "Mode options: 'direct' = direct LLM API calls (bypass server), 'proxy' = use server proxy (traditional)",
+  "mode": "direct",
+  "openai": {
+    "baseURL": "${OPENAI_BASE_URL}",
+    "apiKey": "${OPENAI_API_KEY}",
+    "model": "${OPENAI_MODEL}",
+    "timeout": 30,
+    "maxTokens": 1000,
+    "temperature": 0.7
+  },
+  "serverProxy": {
+    "baseURL": "${SERVER_PROXY_URL}",
+    "timeout": 30
+  },
+  "prompt": {
+    "system": "你是一个智能助手，请根据用户的问题给出回答。"
+  },
+  "audio": {
+    "sampleRate": 16000,
+    "channels": 1,
+    "format": "wav"
+  }
+}

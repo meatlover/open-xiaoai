@@ -12,6 +12,12 @@ node_modules
 .env.test.local
 .env.production.local
 
+# Config files with potential secrets (ignore all except templates/examples)
+**/config.json
+**/config.ts
+**/config.ts
+*.lock
+
 # Testing
 coverage
 temp
@@ -47,3 +53,22 @@ __pycache__
 .mi.json
 xiaozhi.json
 open-xiaoai.node
+
+# Security - Certificate and key files
+*.crt
+*.key
+*.p12
+*.cert
+*.pfx
+*.jks
+*.keystore
+*.backup
+
+# Development and test files  
+*.log
+test-*.sh
+*test*.py
+debug-*
+temp-*
+
+workspace/

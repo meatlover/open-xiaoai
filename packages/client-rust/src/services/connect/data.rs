@@ -33,16 +33,15 @@ impl Stream {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: String,
-    pub event: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub data: Option<Value>,
+    pub name: String,
+    pub data: Value,
 }
 
 impl Event {
-    pub fn new(event: &str, data: Option<Value>) -> Self {
+    pub fn new(name: &str, data: Value) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            event: event.to_string(),
+            name: name.to_string(),
             data,
         }
     }
@@ -51,46 +50,55 @@ impl Event {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub id: String,
-    pub command: String,
-    pub payload: Option<Value>,
+    pub method: String,
+    pub params: Value,
+}
+
+impl Request {
+    pub fn new(method: &str, params: Value) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            method: method.to_string(),
+            params,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub code: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub msg: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub data: Option<Value>,
+    pub data: Value,
 }
 
 impl Response {
+    pub fn new(id: &str, data: Value) -> Self {
+        Self {
+            id: id.to_string(),
+            data,
+        }
+    }
+
     pub fn success() -> Self {
         Self {
-            id: 0.to_string(),
-            code: Some(0),
-            msg: Some("success".to_string()),
-            data: None,
+            id: Uuid::new_v4().to_string(),
+            data: serde_json::json!({"status": "success"}),
         }
     }
 
     pub fn from_data(data: Value) -> Self {
         Self {
-            id: 0.to_string(),
-            code: None,
-            msg: None,
-            data: Some(data),
+            id: Uuid::new_v4().to_string(),
+            data,
         }
     }
 
     pub fn from_error(id: &str, e: impl std::fmt::Display) -> Self {
         Self {
             id: id.to_string(),
-            code: Some(-1),
-            msg: Some(e.to_string()),
-            data: None,
+            data: serde_json::json!({
+                "error": e.to_string(),
+                "status": "error"
+            }),
         }
     }
 }

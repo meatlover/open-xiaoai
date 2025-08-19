@@ -33,10 +33,10 @@
    # 支持 OpenAI、302.ai、DeepSeek 等兼容 API
    
    # 编译多模式客户端
-   cargo build --release --bin multi_mode_client
+   cargo build --release --bin client
    
    # 将客户端上传到小爱音箱
-   scp target/release/multi_mode_client root@xiaomi-speaker:/data/
+   scp target/release/client root@xiaomi-speaker:/data/
    scp config.json root@xiaomi-speaker:/data/
    ```
 
@@ -45,17 +45,17 @@
    #### 服务器中转模式：
    ```bash
    # 在小爱音箱设备上
-   ./http_client http://your-server:4399
+   ./client config.json
    # 或使用环境变量
    export SERVER_URL="http://your-server:4399"
-   ./http_client
+   ./client config.json
    ```
 
    #### 直连 LLM 模式：
    ```bash
    # 在小爱音箱设备上
    cd /data
-   ./multi_mode_client
+   ./client config.json
    ```
 
 4. **体验全新的 AI 能力** ✨
@@ -117,8 +117,7 @@ open-xiaoai/
 ├── packages/
 │   ├── client-rust/               # 核心 HTTP 客户端
 │   │   ├── src/bin/
-│   │   │   ├── http_client.rs     # HTTP 客户端（运行在小爱音箱）
-│   │   │   └── multi_mode_client.rs # 多模式客户端（支持直连/中转）
+│   │   │   └── client.rs          # 统一客户端（支持直连/代理模式）
 │   │   └── config.json            # LLM API 配置
 │   ├── client-patch/              # 小爱音箱固件补丁
 │   └── flash-tool/                # 刷机工具

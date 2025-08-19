@@ -1,10 +1,13 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::time::Duration;
 use tokio::time::sleep;
 use uuid::Uuid;
+
+use open_xiaoai::services::connect::data::{Event, Response};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
@@ -141,6 +144,7 @@ pub struct ServerProxyService {
     config: ServerProxyConfig,
     client: Client,
     client_id: String,
+    headers: HashMap<String, String>,
 }
 
 impl ServerProxyService {
@@ -151,51 +155,158 @@ impl ServerProxyService {
             .build()
             .expect("Failed to create HTTP client");
 
+        let mut headers = HashMap::new();
+        
+        // Add Cloudflare Access Service Token headers if available
+        if let Ok(client_id) = std::env::var("CF_ACCESS_CLIENT_ID") {
+            headers.insert("CF-Access-Client-Id".to_string(), client_id);
+        }
+        if let Ok(client_secret) = std::env::var("CF_ACCESS_CLIENT_SECRET") {
+            headers.insert("CF-Access-Client-Secret".to_string(), client_secret);
+        }
+
         Self {
             config,
             client,
             client_id: Uuid::new_v4().to_string(),
+            headers,
         }
     }
 
-    async fn send_event(&self, text: &str) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        let url = format!("{}/events", self.config.base_url);
+    async fn send_request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}{}", self.config.base_url, path);
         
-        let payload = json!({
-            "id": format!("instruction-{}", Uuid::new_v4()),
-            "name": "instruction",
-            "data": {
-                "text": text
-            }
-        });
+        let mut request = match method {
+            "GET" => self.client.get(&url),
+            "POST" => self.client.post(&url),
+            _ => return Err("Unsupported HTTP method".into()),
+        };
 
-        let response = self.client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await?;
+        // Add custom headers
+        for (key, value) in &self.headers {
+            request = request.header(key, value);
+        }
+
+        if let Some(body) = body {
+            request = request.header("Content-Type", "application/json").json(&body);
+        }
+
+        let response = request.send().await?;
 
         if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(format!("Server proxy error: {}", error_text).into());
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("HTTP {} error: {}", status, error_text).into());
         }
 
         let result: Value = response.json().await?;
         Ok(result)
     }
 
+    pub async fn register(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let body = json!({
+            "clientId": self.client_id
+        });
+
+        let _response = self.send_request("POST", "/register", Some(body)).await?;
+        println!("✅ [PROXY] Client registered: {}", self.client_id);
+        Ok(())
+    }
+
+    pub async fn send_event(&self, event: &Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let body = json!(event);
+        let _response = self.send_request("POST", "/events", Some(body)).await?;
+        Ok(())
+    }
+
+    pub async fn poll_commands(&self) -> Result<Vec<Response>, Box<dyn std::error::Error + Send + Sync>> {
+        let path = format!("/commands/{}", self.client_id);
+        let response = self.send_request("GET", &path, None).await?;
+        
+        if let Some(commands) = response.get("commands") {
+            let commands: Vec<Response> = serde_json::from_value(commands.clone())?;
+            if !commands.is_empty() {
+                println!("📨 [PROXY] Received {} commands", commands.len());
+            }
+            Ok(commands)
+        } else {
+            Ok(vec![])
+        }
+    }
+
     async fn call_llm(&self, instruction: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        println!("🌐 [PROXY] Sending to server: {}", instruction);
+        println!("🌐 [PROXY] Sending instruction to server: {}", instruction);
         
-        let _response = self.send_event(instruction).await?;
+        // Send instruction event to server
+        let event = Event::new("instruction", json!({
+            "text": instruction,
+            "clientId": self.client_id
+        }));
         
-        // For proxy mode, we'd need to implement polling or WebSocket to get the response
-        // For this demo, we'll simulate the server processing
-        println!("✅ [PROXY] Event sent to server for processing");
+        self.send_event(&event).await?;
+        println!("✅ [PROXY] Instruction sent, waiting for response...");
         
-        // In a real implementation, you'd poll the server for the response
-        Ok("Server response would be retrieved via polling or streaming".to_string())
+        // Poll for response (try for up to 30 seconds)
+        for attempt in 1..=30 {
+            sleep(Duration::from_secs(1)).await;
+            
+            match self.poll_commands().await {
+                Ok(commands) => {
+                    for command in commands {
+                        if let Some(action) = command.data.get("action") {
+                            if action == "tts" {
+                                if let Some(text) = command.data.get("text").and_then(|v| v.as_str()) {
+                                    println!("🎯 [PROXY] Received response: {}", text);
+                                    return Ok(text.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("⚠️  [PROXY] Poll attempt {} failed: {}", attempt, e);
+                }
+            }
+        }
+        
+        Err("Timeout waiting for server response".into())
+    }
+
+    pub async fn run_proxy_mode(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Register with server
+        if let Err(e) = self.register().await {
+            eprintln!("❌ [PROXY] Failed to register: {}", e);
+            return Err(e);
+        }
+
+        println!("🔄 [PROXY] Starting main loop...");
+        
+        loop {
+            // Poll for commands every 5 seconds
+            match self.poll_commands().await {
+                Ok(commands) => {
+                    for command in commands {
+                        println!("📋 [PROXY] Processing command: {:?}", command.data);
+                        // Process commands here if needed
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ [PROXY] Failed to poll commands: {}", e);
+                }
+            }
+
+            // Send a heartbeat event
+            let heartbeat = Event::new("heartbeat", json!({
+                "timestamp": chrono::Utc::now().timestamp(),
+                "clientId": self.client_id
+            }));
+
+            if let Err(e) = self.send_event(&heartbeat).await {
+                eprintln!("❌ [PROXY] Failed to send heartbeat: {}", e);
+            }
+
+            sleep(Duration::from_secs(5)).await;
+        }
     }
 }
 
@@ -205,7 +316,7 @@ pub struct MultiModeClient {
 }
 
 impl MultiModeClient {
-    pub fn new(config_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(config_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let config_content = fs::read_to_string(config_path)?;
         let config: Config = serde_json::from_str(&config_content)?;
 
@@ -256,18 +367,45 @@ impl MultiModeClient {
             }
         }
     }
+
+    pub async fn run_production_mode(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match &self.llm_service {
+            LLMService::Server(proxy_service) => {
+                println!("🚀 Starting proxy mode production client...");
+                proxy_service.run_proxy_mode().await?;
+            }
+            LLMService::Direct(_) => {
+                println!("🚀 Starting direct mode production client...");
+                // For direct mode, we could implement audio processing loop here
+                // For now, just run the test
+                self.run_test_loop().await;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = std::env::args()
-        .nth(1)
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let args: Vec<String> = std::env::args().collect();
+    
+    let config_path = args.get(1)
+        .cloned()
         .unwrap_or_else(|| "config.json".to_string());
+
+    let test_mode = args.get(2).map(|s| s == "--test").unwrap_or(false);
 
     println!("📋 Loading config from: {}", config_path);
 
     let client = MultiModeClient::new(&config_path)?;
-    client.run_test_loop().await;
+    
+    if test_mode {
+        println!("🧪 Running in test mode");
+        client.run_test_loop().await;
+    } else {
+        println!("🏭 Running in production mode");
+        client.run_production_mode().await?;
+    }
 
     Ok(())
 }

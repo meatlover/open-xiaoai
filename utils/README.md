@@ -12,8 +12,8 @@ This directory contains scripts to automatically start the Open-XiaoAI client on
 
 ### 🚀 Auto-Detection Mode
 The boot script automatically detects the running mode from `config.json`:
-- **Direct Mode** (`"mode": "direct"`): Downloads and runs `multi_mode_client`
-- **Proxy Mode** (`"mode": "proxy"`): Downloads and runs `http_client`
+- **Direct Mode** (`"mode": "direct"`): Runs unified `client` with direct LLM API calls
+- **Proxy Mode** (`"mode": "proxy"`): Runs unified `client` with server proxy communication
 
 ### 📥 Auto-Download
 - Automatically downloads the appropriate client binary from GitHub releases
@@ -108,7 +108,7 @@ EOF
 ssh root@your-device-ip "reboot"
 
 # Wait 1-2 minutes, then check if client is running
-ssh root@your-device-ip "ps | grep -E '(http_client|multi_mode_client)'"
+ssh root@your-device-ip "ps | grep client"
 
 # Check logs
 ssh root@your-device-ip "tail -f /var/log/messages | grep open-xiaoai"
@@ -121,7 +121,7 @@ ssh root@your-device-ip "tail -f /var/log/messages | grep open-xiaoai"
 ssh root@your-device-ip "/data/boot.sh"
 
 # Check if process started
-ssh root@your-device-ip "ps | grep -E '(http_client|multi_mode_client)'"
+ssh root@your-device-ip "ps | grep client"
 ```
 
 ## Troubleshooting
@@ -174,7 +174,7 @@ ssh root@your-device-ip "ps | grep -E '(http_client|multi_mode_client)'"
 
 3. **Run client manually:**
    ```bash
-   ssh root@your-device-ip "cd /data/open-xiaoai && ./http_client http://your-server:4399"
+   ssh root@your-device-ip "cd /data/open-xiaoai && ./client config.json"
    ```
 
 ## Advanced Usage

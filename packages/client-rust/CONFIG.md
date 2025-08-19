@@ -26,8 +26,8 @@ This project uses a template-based configuration system to keep sensitive inform
 
 4. **Build and run:**
    ```bash
-   cargo build --release --bin multi_mode_client
-   ./target/release/multi_mode_client
+   cargo build --release --bin client
+   ./target/release/client
    ```
 
 ### Files Structure

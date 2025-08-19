@@ -17,7 +17,7 @@ image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:0.2.5"
 [dependencies]
 futures = "0.3.31"
 tokio = { version = "1.0", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 warp = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

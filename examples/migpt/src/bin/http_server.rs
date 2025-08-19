@@ -240,9 +240,16 @@ async fn handle_events(
                             }),
                         };
                         
-                        // Store command for client polling (if we had a client_id)
-                        // For now, just log it
-                        println!("🔊 TTS Command created: {}", tts_command.id);
+                        // Store command for client polling
+                        if let Some(client_id) = event.data.get("clientId").and_then(|v| v.as_str()) {
+                            let mut commands = state.commands.lock().unwrap();
+                            commands.entry(client_id.to_string())
+                                .or_insert_with(Vec::new)
+                                .push(tts_command.clone());
+                            println!("🔊 TTS Command stored for client {}: {}", client_id, tts_command.id);
+                        } else {
+                            println!("🔊 TTS Command created (no client_id): {}", tts_command.id);
+                        }
                     }
                     Err(e) => {
                         println!("❌ LLM call failed: {}", e);

@@ -389,15 +389,18 @@ impl MultiModeClient {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<String> = std::env::args().collect();
     
-    let config_path = args.get(1)
-        .cloned()
-        .unwrap_or_else(|| "config.json".to_string());
-
+    // Show usage if no config file provided
+    if args.len() < 2 {
+        print_usage();
+        return Ok(());
+    }
+    
+    let config_path = &args[1];
     let test_mode = args.get(2).map(|s| s == "--test").unwrap_or(false);
 
     println!("📋 Loading config from: {}", config_path);
 
-    let client = MultiModeClient::new(&config_path)?;
+    let client = MultiModeClient::new(config_path)?;
     
     if test_mode {
         println!("🧪 Running in test mode");
@@ -408,4 +411,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     Ok(())
+}
+
+fn print_usage() {
+    println!("🤖 Open-XiaoAi Unified Client");
+    println!();
+    println!("Usage:");
+    println!("  ./client <config.json> [--test]");
+    println!();
+    println!("Examples:");
+    println!("  ./client config.json         # Run in production mode");
+    println!("  ./client config.json --test  # Run in test mode");
+    println!();
+    println!("📖 Configuration Setup:");
+    println!();
+    println!("🔗 Proxy Mode (via HTTP server):");
+    println!("{{");
+    println!("  \"mode\": \"proxy\",");
+    println!("  \"serverProxy\": {{");
+    println!("    \"baseURL\": \"http://your-server:4399\",");
+    println!("    \"timeout\": 30");
+    println!("  }},");
+    println!("  \"prompt\": {{");
+    println!("    \"system\": \"你是一个智能助手。\"");
+    println!("  }}");
+    println!("}}");
+    println!();
+    println!("🤖 Direct Mode (direct LLM API):");
+    println!("{{");
+    println!("  \"mode\": \"direct\",");
+    println!("  \"openai\": {{");
+    println!("    \"baseURL\": \"https://api.openai.com/v1\",");
+    println!("    \"apiKey\": \"your-api-key\",");
+    println!("    \"model\": \"gpt-4\",");
+    println!("    \"timeout\": 30,");
+    println!("    \"maxTokens\": 1000,");
+    println!("    \"temperature\": 0.7");
+    println!("  }},");
+    println!("  \"prompt\": {{");
+    println!("    \"system\": \"你是一个智能助手。\"");
+    println!("  }}");
+    println!("}}");
+    println!();
+    println!("💡 Tips:");
+    println!("  • Use proxy mode for centralized server management");
+    println!("  • Use direct mode for standalone operation");
+    println!("  • Copy config.template.json and modify for your setup");
+    println!("  • Test your config with --test flag first");
 }

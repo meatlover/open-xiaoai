@@ -6,6 +6,6 @@
       "@/*": ["migpt/*"]
     }
   },
-  "include": ["migpt", "config.ts"],
+  "include": ["migpt"],
   "exclude": ["node_modules"]
 }

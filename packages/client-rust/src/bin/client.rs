@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use open_xiaoai::services::connect::data::{Event, Response};
@@ -66,6 +68,7 @@ impl LLMService {
     }
 }
 
+#[derive(Clone)]
 pub struct DirectLLMService {
     config: OpenAIConfig,
     client: Client,
@@ -369,18 +372,372 @@ impl MultiModeClient {
     }
 
     pub async fn run_production_mode(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.run_production_mode_with_debug(false).await
+    }
+    
+    pub async fn run_production_mode_with_debug(&self, debug: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match &self.llm_service {
             LLMService::Server(proxy_service) => {
                 println!("🚀 Starting proxy mode production client...");
+                if debug {
+                    println!("🐛 Debug: Proxy service configuration loaded");
+                }
                 proxy_service.run_proxy_mode().await?;
             }
-            LLMService::Direct(_) => {
+            LLMService::Direct(direct_service) => {
                 println!("🚀 Starting direct mode production client...");
-                // For direct mode, we could implement audio processing loop here
-                // For now, just run the test
-                self.run_test_loop().await;
+                if debug {
+                    println!("🐛 Debug: Direct LLM service configuration loaded");
+                }
+                self.run_direct_mode_production_with_debug(direct_service, debug).await?;
             }
         }
+        Ok(())
+    }
+
+    async fn run_direct_mode_production(&self, direct_service: &DirectLLMService) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.run_direct_mode_production_with_debug(direct_service, false).await
+    }
+
+    async fn run_direct_mode_production_with_debug(&self, direct_service: &DirectLLMService, debug: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use open_xiaoai::services::monitor::instruction::{InstructionMonitor, LogMessage, Payload};
+        use open_xiaoai::services::monitor::kws::{KwsMonitor, KwsMonitorEvent};
+        use open_xiaoai::services::monitor::file::FileMonitorEvent;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        
+        println!("🎤 Direct mode: Integrating with XiaoAi device audio system");
+        
+        if debug {
+            println!("🐛 Debug: Starting XiaoAi device integration with detailed logging");
+        }
+        
+        // Create wake word log file if it doesn't exist
+        let kws_dir = "/tmp/open-xiaoai";
+        let kws_file = "/tmp/open-xiaoai/kws.log";
+        
+        if let Err(_) = std::fs::metadata(kws_dir) {
+            std::fs::create_dir_all(kws_dir)?;
+            println!("📁 Created wake word directory: {}", kws_dir);
+        }
+        
+        if let Err(_) = std::fs::metadata(kws_file) {
+            std::fs::write(kws_file, "")?;
+            println!("📄 Created wake word log file: {}", kws_file);
+        }
+        
+        println!("👂 Monitoring wake words at: {}", kws_file);
+        println!("📢 Monitoring voice instructions at: /tmp/mico_aivs_lab/instruction.log");
+        
+        if debug {
+            println!("🐛 Debug: File monitoring setup complete");
+            println!("🐛 Debug: Setting up wake word detection state");
+        }
+        
+        // Shared state to track if wake word was detected
+        let wake_detected = Arc::new(AtomicBool::new(false));
+        let wake_detected_clone = Arc::clone(&wake_detected);
+        
+        // Start monitoring wake words and instructions in parallel
+        let direct_service_clone = Arc::new(direct_service.clone());
+        let wake_detected_for_instruction = Arc::clone(&wake_detected);
+        
+        // Spawn wake word monitoring in background
+        let wake_task = {
+            let wake_detected = Arc::clone(&wake_detected_clone);
+            let debug_flag = debug;
+            tokio::spawn(async move {
+                if debug_flag {
+                    println!("🐛 Debug: Wake word monitoring task starting");
+                }
+                
+                // Make wake word monitoring more resilient
+                loop {
+                    if debug_flag {
+                        println!("🐛 Debug: Starting wake word monitor");
+                    }
+                    
+                    let wake_detected = Arc::clone(&wake_detected);
+                    let debug_flag = debug_flag;
+                    
+                    KwsMonitor::start(move |event| {
+                        let wake_detected = Arc::clone(&wake_detected);
+                        let debug_flag = debug_flag;
+                        async move {
+                            if debug_flag {
+                                println!("🐛 Debug: Wake word event: {:?}", event);
+                            }
+                            
+                            match event {
+                                KwsMonitorEvent::Keyword(keyword) => {
+                                    println!("🎯 Wake word detected: {}", keyword);
+                                    wake_detected.store(true, Ordering::Relaxed);
+                                    
+                                    // Reset wake word detection after 10 seconds
+                                    let wake_detected_reset = Arc::clone(&wake_detected);
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                                        wake_detected_reset.store(false, Ordering::Relaxed);
+                                        if debug_flag {
+                                            println!("🐛 Debug: Wake word detection reset after timeout");
+                                        }
+                                    });
+                                }
+                                KwsMonitorEvent::Started => {
+                                    println!("🎤 Wake word monitoring started");
+                                }
+                            }
+                            Ok(())
+                        }
+                    }).await;
+                    
+                    if debug_flag {
+                        println!("🐛 Debug: Wake word monitoring stopped, restarting in 30 seconds...");
+                    }
+                    
+                    // Wait before restarting
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            })
+        };
+        
+        // Spawn instruction monitoring in background
+        let instruction_task = {
+            let direct_service = Arc::clone(&direct_service_clone);
+            let wake_detected = Arc::clone(&wake_detected_for_instruction);
+            let debug_flag = debug;
+            
+            tokio::spawn(async move {
+                if debug_flag {
+                    println!("🐛 Debug: Instruction monitoring task starting");
+                }
+                
+                // Make instruction monitoring more resilient
+                loop {
+                    if debug_flag {
+                        println!("🐛 Debug: Starting instruction monitor");
+                    }
+                    
+                    let direct_service = Arc::clone(&direct_service);
+                    let wake_detected = Arc::clone(&wake_detected);
+                    let debug_flag = debug_flag;
+                    
+                    InstructionMonitor::start(move |event| {
+                        let direct_service = Arc::clone(&direct_service);
+                        let wake_detected = Arc::clone(&wake_detected);
+                        let debug_flag = debug_flag;
+                        
+                        async move {
+                            if let FileMonitorEvent::NewLine(content) = event {
+                                if debug_flag {
+                                    println!("🐛 Debug: New instruction line: {}", content);
+                                }
+                                
+                                // Parse the instruction log line
+                                if let Ok(log_message) = serde_json::from_str::<LogMessage>(&content) {
+                                    if let Payload::RecognizeResultPayload { is_final, results, .. } = log_message.payload {
+                                        if is_final && !results.is_empty() {
+                                            let text = &results[0].text;
+                                            // Lower the confidence threshold and accept any non-empty text
+                                            if !text.trim().is_empty() {
+                                                // Deduplication: Check if we've processed this instruction recently
+                                                static LAST_INSTRUCTION: std::sync::OnceLock<Arc<Mutex<Option<(String, u64)>>>> = std::sync::OnceLock::new();
+                                                let last_instruction = LAST_INSTRUCTION.get_or_init(|| Arc::new(Mutex::new(None)));
+                                                
+                                                let current_time = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap_or_default()
+                                                    .as_secs();
+                                                
+                                                let mut last_processed = last_instruction.lock().await;
+                                                let should_skip = if let Some((last_text, last_time)) = &*last_processed {
+                                                    last_text == text && current_time - last_time < 3
+                                                } else {
+                                                    false
+                                                };
+                                                
+                                                if should_skip {
+                                                    if debug_flag {
+                                                        println!("🐛 Debug: Skipping duplicate instruction '{}' (processed recently)", text);
+                                                    }
+                                                    return Ok(());
+                                                }
+                                                
+                                                // Update the last processed instruction
+                                                *last_processed = Some((text.to_string(), current_time));
+                                                drop(last_processed);
+                                                
+                                                println!("🎤 Voice instruction: '{}' (confidence: {})", text, results[0].confidence);
+                                                
+                                                if debug_flag {
+                                                    println!("🐛 Debug: Processing voice instruction (confidence threshold relaxed)");
+                                                }
+                                                
+                                                // For now, process ALL voice instructions to bypass wake word requirement
+                                                // TODO: Add proper wake word detection later
+                                                let should_process = true; // wake_detected.load(Ordering::Relaxed) || true;
+                                                
+                                                if should_process {
+                                                    println!("✅ Processing voice instruction");
+                                                    
+                                                    // First, interrupt XiaoAi's default processing
+                                                    if debug_flag {
+                                                        println!("🐛 Debug: Interrupting XiaoAi default processing");
+                                                    }
+                                                    
+                                                    if let Err(e) = Self::interrupt_xiaoai().await {
+                                                        if debug_flag {
+                                                            println!("🐛 Debug: Failed to interrupt XiaoAi: {}", e);
+                                                        }
+                                                    }
+                                                    
+                                                    if debug_flag {
+                                                        println!("🐛 Debug: Calling LLM with text: '{}'", text);
+                                                    }
+                                                    
+                                                    // Process the instruction with LLM
+                                                    match direct_service.call_llm(text).await {
+                                                        Ok(response) => {
+                                                            println!("🤖 LLM Response: {}", response);
+                                                            
+                                                            if debug_flag {
+                                                                println!("🐛 Debug: Sending TTS response: '{}'", response);
+                                                            }
+                                                            
+                                                            // Send response to device TTS
+                                                            if let Err(e) = Self::send_tts_response(&response).await {
+                                                                eprintln!("❌ Failed to send TTS response: {}", e);
+                                                                if debug_flag {
+                                                                    eprintln!("🐛 Debug: TTS error details: {:?}", e);
+                                                                }
+                                                            } else if debug_flag {
+                                                                println!("🐛 Debug: TTS response sent successfully");
+                                                            }
+                                                            
+                                                            // Reset wake word detection after processing
+                                                            wake_detected.store(false, Ordering::Relaxed);
+                                                            if debug_flag {
+                                                                println!("🐛 Debug: Wake word detection reset after processing");
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!("❌ LLM call failed: {}", e);
+                                                            if debug_flag {
+                                                                eprintln!("🐛 Debug: LLM error details: {:?}", e);
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    println!("⏭️  Ignoring instruction (no recent wake word detected)");
+                                                    if debug_flag {
+                                                        println!("🐛 Debug: Instruction ignored - wake word not detected recently");
+                                                    }
+                                                }
+                                            } else if debug_flag {
+                                                println!("🐛 Debug: Skipping empty text");
+                                            }
+                                        }
+                                    }
+                                } else if debug_flag {
+                                    println!("🐛 Debug: Failed to parse JSON: {}", content);
+                                }
+                            }
+                            Ok(())
+                        }
+                    }).await;
+                    
+                    if debug_flag {
+                        println!("🐛 Debug: Instruction monitoring stopped, restarting in 30 seconds...");
+                    }
+                    
+                    // Wait before restarting
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            })
+        };        println!("✅ Audio monitoring started - waiting for wake words and instructions");
+        
+        if debug {
+            println!("🐛 Debug: Both monitoring tasks spawned");
+            println!("🐛 Debug: Entering main service loop - the client will run until manually stopped");
+        }
+        
+        // Keep the service running - the tasks run in background
+        // We use a simple infinite loop with periodic heartbeat
+        let mut heartbeat_counter = 0;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            heartbeat_counter += 1;
+            
+            if debug {
+                println!("🐛 Debug: Heartbeat #{} - service running normally", heartbeat_counter);
+            }
+            
+            // Check if tasks are still running
+            if wake_task.is_finished() {
+                eprintln!("❌ Wake word monitoring task has stopped unexpectedly");
+                return Err("Wake word monitoring failed".into());
+            }
+            
+            if instruction_task.is_finished() {
+                eprintln!("❌ Instruction monitoring task has stopped unexpectedly");
+                return Err("Instruction monitoring failed".into());
+            }
+        }
+    }
+
+    async fn interrupt_xiaoai() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::process::Command;
+        
+        // Interrupt XiaoAi's default processing by restarting the mico service
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg("/etc/init.d/mico_aivs_lab restart >/dev/null 2>&1")
+            .output();
+            
+        match output {
+            Ok(result) => {
+                if result.status.success() {
+                    println!("🛑 XiaoAi default processing interrupted");
+                } else {
+                    println!("⚠️  Failed to interrupt XiaoAi service");
+                }
+            }
+            Err(e) => {
+                println!("⚠️  XiaoAi interruption command failed: {}", e);
+            }
+        }
+        
+        // Small delay to allow service restart
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        
+        Ok(())
+    }
+
+    async fn send_tts_response(text: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::process::Command;
+        
+        // Use device TTS system
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(&format!("/usr/sbin/tts_play.sh '{}'", text.replace("'", "'\\''")))
+            .output();
+            
+        match output {
+            Ok(result) => {
+                if result.status.success() {
+                    println!("🔊 TTS response sent successfully");
+                } else {
+                    println!("⚠️  TTS command failed, using fallback");
+                    // Fallback: write to file for other processes
+                    std::fs::write("/tmp/xiaoai_output.txt", text)?;
+                }
+            }
+            Err(_) => {
+                // Fallback: write to file for other processes
+                std::fs::write("/tmp/xiaoai_output.txt", text)?;
+                println!("🔊 TTS response written to file");
+            }
+        }
+        
         Ok(())
     }
 }
@@ -389,25 +746,49 @@ impl MultiModeClient {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<String> = std::env::args().collect();
     
+    // Parse arguments
+    let mut config_path = None;
+    let mut test_mode = false;
+    let mut debug_mode = false;
+    
+    for (i, arg) in args.iter().enumerate() {
+        match arg.as_str() {
+            "--test" => test_mode = true,
+            "--debug" => debug_mode = true,
+            _ if i == 1 => config_path = Some(arg.clone()),
+            _ => {}
+        }
+    }
+    
     // Show usage if no config file provided
-    if args.len() < 2 {
+    if config_path.is_none() {
         print_usage();
         return Ok(());
     }
     
-    let config_path = &args[1];
-    let test_mode = args.get(2).map(|s| s == "--test").unwrap_or(false);
+    let config_path = config_path.unwrap();
+    
+    if debug_mode {
+        println!("🐛 Debug mode enabled");
+        std::env::set_var("RUST_LOG", "debug");
+    }
 
     println!("📋 Loading config from: {}", config_path);
+    if debug_mode {
+        println!("🔧 Arguments: test_mode={}, debug_mode={}", test_mode, debug_mode);
+    }
 
-    let client = MultiModeClient::new(config_path)?;
+    let client = MultiModeClient::new(&config_path)?;
     
     if test_mode {
         println!("🧪 Running in test mode");
         client.run_test_loop().await;
     } else {
         println!("🏭 Running in production mode");
-        client.run_production_mode().await?;
+        if debug_mode {
+            println!("🐛 Debug: Starting production mode with detailed logging");
+        }
+        client.run_production_mode_with_debug(debug_mode).await?;
     }
 
     Ok(())
@@ -417,11 +798,17 @@ fn print_usage() {
     println!("🤖 Open-XiaoAi Unified Client");
     println!();
     println!("Usage:");
-    println!("  ./client <config.json> [--test]");
+    println!("  ./client <config.json> [--test] [--debug]");
+    println!();
+    println!("Options:");
+    println!("  --test    Run in test mode (quick functionality test)");
+    println!("  --debug   Enable debug mode (verbose logging)");
     println!();
     println!("Examples:");
-    println!("  ./client config.json         # Run in production mode");
-    println!("  ./client config.json --test  # Run in test mode");
+    println!("  ./client config.json              # Run in production mode");
+    println!("  ./client config.json --test       # Run in test mode");
+    println!("  ./client config.json --debug      # Run with debug logging");
+    println!("  ./client config.json --test --debug  # Test mode with debug");
     println!();
     println!("📖 Configuration Setup:");
     println!();

@@ -39,6 +39,21 @@ export const kOpenXiaoAIConfig = {
 };
 ```
 
+### HTTP 服务器运行
+
+除了 Node.js 版本的 MiGPT 服务器，本目录还包含独立的 HTTP 服务器实现：
+
+```shell
+# 启动 HTTP 服务器（Rust 版本）
+cargo run --release --bin http_server
+
+# 部署方式一：Docker 容器部署
+./deploy-docker.sh <remote-server-ip>
+
+# 部署方式二：直接部署二进制文件
+./deploy-binary.sh <remote-server-ip>
+```
+
 ### Docker 运行
 
 [![Docker Image Version](https://img.shields.io/docker/v/idootop/open-xiaoai-migpt?color=%23086DCD&label=docker%20image)](https://hub.docker.com/r/idootop/open-xiaoai-migpt)
@@ -47,6 +62,21 @@ export const kOpenXiaoAIConfig = {
 
 ```shell
 docker run -it --rm -p 4399:4399 -v $(pwd)/config.ts:/app/config.ts idootop/open-xiaoai-migpt:latest
+```
+
+### HTTP 服务器运行
+
+除了 Node.js 版本的 MiGPT 服务器，本目录还包含独立的 HTTP 服务器实现：
+
+```shell
+# 启动 HTTP 服务器（Rust 版本）
+cargo run --release --bin http_server
+
+# 部署方式一：Docker 容器部署
+./deploy-docker.sh <remote-server-ip>
+
+# 部署方式二：直接部署二进制文件
+./deploy-binary.sh <remote-server-ip>
 ```
 
 ### 编译运行
@@ -74,10 +104,9 @@ pnpm dev
 
 ## 注意事项
 
-1. 默认 Server 服务端口为 `4399`（比如 ws://192.168.31.227:4399），运行前请确保该端口未被其他程序占用。
+1. 默认 HTTP Server 服务端口为 `4399`，运行前请确保该端口未被其他程序占用。
 
-2. 默认 Rust Server 在启动时，并没有开启小爱音箱的录音能力。
-   如果你需要在 Node.js 端正常接收音频输入流，或者播放音频输出流，请将 `src/server.rs` 文件中被注释掉的 `start_recording` 和 `start_play` 代码加回来，然后重新编译运行。
+2. HTTP 服务器专注于 LLM 集成，不处理音频流。如需音频功能，请使用原始的 WebSocket 版本或扩展当前实现。
 
 > [!NOTE]
 > 本项目只是一个简单的演示程序，抛砖引玉。如果你想要更多的功能，比如唤醒词识别、语音转文字、连续对话等（甚至是对接 OpenAI 的 [Realtime API](https://platform.openai.com/docs/guides/realtime)），可参考本项目代码自行实现。

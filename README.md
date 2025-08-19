@@ -4,6 +4,7 @@
 > 本项目 fork 自 [idootop/open-xiaoai](https://github.com/idootop/open-xiaoai)。
 
 - 🌐 **HTTP-Only 架构**: 完全移除 WebSocket，采用兼容性更强的 HTTP RESTful API
+- 🔗 **灵活部署选项**: 支持通过服务器中转或客户端直连 LLM API，满足不同网络环境需求
 - 🛡️ **企业级安全**: 集成 Cloudflare Access Service Token 认证机制
 
 
@@ -11,7 +12,9 @@
 
 1. **刷机更新小爱音箱补丁固件，开启并 SSH 连接到小爱音箱** 👉 [教程](docs/flash.md)
 
-2. **部署 HTTP 服务端**
+2. **选择部署方式**
+
+   #### 方式一：服务器中转模式（推荐）
    ```bash
    cd packages/client-rust
    
@@ -22,13 +25,37 @@
    cargo run --release --bin http_server
    ```
 
+   #### 方式二：客户端直连 LLM 模式
+   ```bash
+   cd packages/client-rust
+   
+   # 配置 LLM API（编辑 config.json）
+   # 支持 OpenAI、302.ai、DeepSeek 等兼容 API
+   
+   # 编译多模式客户端
+   cargo build --release --bin multi_mode_client
+   
+   # 将客户端上传到小爱音箱
+   scp target/release/multi_mode_client root@xiaomi-speaker:/data/
+   scp config.json root@xiaomi-speaker:/data/
+   ```
+
 3. **在小爱音箱上运行客户端**
+
+   #### 服务器中转模式：
    ```bash
    # 在小爱音箱设备上
    ./http_client http://your-server:4399
    # 或使用环境变量
    export SERVER_URL="http://your-server:4399"
    ./http_client
+   ```
+
+   #### 直连 LLM 模式：
+   ```bash
+   # 在小爱音箱设备上
+   cd /data
+   ./multi_mode_client
    ```
 
 4. **体验全新的 AI 能力** ✨
@@ -39,16 +66,27 @@
 
 ### 🔧 配置说明
 
-**服务器配置** (`config.json`):
+**多模式客户端配置** (`config.json`):
 ```json
 {
+  "mode": "direct",
   "openai": {
     "baseURL": "https://api.openai.com/v1",
     "apiKey": "your-api-key",
     "model": "gpt-4"
+  },
+  "server": {
+    "url": "http://your-server:4399"
   }
 }
 ```
+
+**配置参数说明**:
+- `mode`: 运行模式
+  - `"direct"`: 直连 LLM API 模式
+  - `"proxy"`: 通过服务器中转模式
+- `openai`: LLM API 配置（直连模式使用）
+- `server`: 服务器配置（中转模式使用）
 
 **环境变量支持**:
 - `SERVER_URL`: 服务器地址
@@ -73,7 +111,8 @@ open-xiaoai/
 │   ├── client-rust/               # 核心 HTTP 客户端/服务端
 │   │   ├── src/bin/
 │   │   │   ├── http_client.rs     # HTTP 客户端（运行在小爱音箱）
-│   │   │   └── http_server.rs     # HTTP 服务端（LLM 集成）
+│   │   │   ├── http_server.rs     # HTTP 服务端（LLM 集成）
+│   │   │   └── multi_mode_client.rs # 多模式客户端（支持直连/中转）
 │   │   ├── config.json            # LLM API 配置
 │   │   └── Dockerfile.http-server # Docker 部署文件
 │   ├── client-patch/              # 小爱音箱固件补丁

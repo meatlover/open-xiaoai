@@ -1,0 +1,236 @@
+name: Build and Release Client Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Client Binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - arm-unknown-linux-gnueabihf  # For older ARM devices
+          - armv7-unknown-linux-gnueabihf # For ARMv7 (most Mi devices)
+          - aarch64-unknown-linux-gnu     # For ARM64 devices
+          - x86_64-unknown-linux-gnu      # For testing on x86_64
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf gcc-aarch64-linux-gnu
+          
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/client-rust/target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build binaries
+        working-directory: packages/client-rust
+        run: |
+          # Build http_client
+          cross build --release --target ${{ matrix.target }} --bin http_client
+          
+          # Build http_server  
+          cross build --release --target ${{ matrix.target }} --bin http_server
+          
+          # Build multi_mode_client (if it exists)
+          if [ -f "src/bin/multi_mode_client.rs" ]; then
+            cross build --release --target ${{ matrix.target }} --bin multi_mode_client
+          else
+            echo "multi_mode_client.rs not found, skipping"
+          fi
+
+      - name: Prepare binaries
+        working-directory: packages/client-rust
+        run: |
+          mkdir -p ../../release-artifacts/${{ matrix.target }}
+          
+          # Copy and rename binaries
+          cp target/${{ matrix.target }}/release/http_client ../../release-artifacts/${{ matrix.target }}/
+          cp target/${{ matrix.target }}/release/http_server ../../release-artifacts/${{ matrix.target }}/
+          
+          # Copy multi_mode_client if it exists
+          if [ -f "target/${{ matrix.target }}/release/multi_mode_client" ]; then
+            cp target/${{ matrix.target }}/release/multi_mode_client ../../release-artifacts/${{ matrix.target }}/
+          fi
+          
+          # For ARMv7 (most common), also create generic names
+          if [ "${{ matrix.target }}" = "armv7-unknown-linux-gnueabihf" ]; then
+            cp target/${{ matrix.target }}/release/http_client ../../release-artifacts/http_client
+            cp target/${{ matrix.target }}/release/http_server ../../release-artifacts/http_server
+            if [ -f "target/${{ matrix.target }}/release/multi_mode_client" ]; then
+              cp target/${{ matrix.target }}/release/multi_mode_client ../../release-artifacts/multi_mode_client
+            fi
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: client-binaries-${{ matrix.target }}
+          path: release-artifacts/${{ matrix.target }}/
+
+      - name: Upload generic artifacts (ARMv7 only)
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        uses: actions/upload-artifact@v3
+        with:
+          name: client-binaries-generic
+          path: |
+            release-artifacts/http_client
+            release-artifacts/http_server
+            release-artifacts/multi_mode_client
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          
+          # Copy generic binaries (ARMv7 - most compatible)
+          if [ -d "artifacts/client-binaries-generic" ]; then
+            cp artifacts/client-binaries-generic/* release-assets/
+          fi
+          
+          # Copy config template
+          if [ -f "packages/client-rust/config.template.json" ]; then
+            cp packages/client-rust/config.template.json release-assets/
+          fi
+          
+          # Copy boot script
+          if [ -f "utils/boot.sh" ]; then
+            cp utils/boot.sh release-assets/
+          fi
+          
+          # Create architecture-specific packages
+          for target in arm-unknown-linux-gnueabihf armv7-unknown-linux-gnueabihf aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            if [ -d "artifacts/client-binaries-$target" ]; then
+              cd artifacts/client-binaries-$target
+              tar -czf "../../release-assets/open-xiaoai-$target.tar.gz" *
+              cd ../..
+            fi
+          done
+          
+          # List all release assets
+          ls -la release-assets/
+
+      - name: Get tag name
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.tag.outputs.tag }}
+          name: Open-XiaoAI ${{ steps.tag.outputs.tag }}
+          body: |
+            # Open-XiaoAI ${{ steps.tag.outputs.tag }}
+            
+            ## 📦 Available Downloads
+            
+            ### 🤖 Quick Start (Recommended)
+            - `http_client` - HTTP client for proxy mode (ARMv7, most compatible)
+            - `http_server` - HTTP server for LLM integration
+            - `multi_mode_client` - Multi-mode client supporting direct and proxy modes
+            - `config.template.json` - Configuration template
+            - `boot.sh` - Auto-start script for Mi devices
+            
+            ### 🏗️ Architecture-Specific Packages
+            - `open-xiaoai-armv7-unknown-linux-gnueabihf.tar.gz` - For most Mi devices (ARMv7)
+            - `open-xiaoai-arm-unknown-linux-gnueabihf.tar.gz` - For older ARM devices
+            - `open-xiaoai-aarch64-unknown-linux-gnu.tar.gz` - For ARM64 devices
+            - `open-xiaoai-x86_64-unknown-linux-gnu.tar.gz` - For x86_64 testing
+            
+            ## 🚀 Quick Install
+            
+            ```bash
+            # Download and install auto-start script
+            curl -L https://github.com/meatlover/open-xiaoai/releases/download/${{ steps.tag.outputs.tag }}/boot.sh -o boot.sh
+            
+            # Install to Mi device
+            scp boot.sh root@your-device-ip:/data/boot.sh
+            ssh root@your-device-ip "chmod +x /data/boot.sh"
+            ```
+            
+            ## 📋 Changelog
+            
+            See [CHANGELOG.md](https://github.com/meatlover/open-xiaoai/blob/main/CHANGELOG.md) for detailed changes.
+            
+            ---
+            
+            **Full Changelog**: https://github.com/meatlover/open-xiaoai/compare/v1.0.0...${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          allowUpdates: true
+          removeArtifacts: true
+          artifacts: release-assets/*
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Optional: Also upload to Gitee for China users
+  upload-to-gitee:
+    name: Upload to Gitee Mirror
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Download generic artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: client-binaries-generic
+          path: gitee-artifacts
+
+      - name: Upload to Gitee (if configured)
+        run: |
+          echo "🚀 To enable Gitee upload, configure GITEE_* secrets"
+          echo "Files ready for upload:"
+          ls -la gitee-artifacts/
+          
+          # Example upload command (uncomment and configure secrets):
+          # curl -X POST "https://gitee.com/api/v5/repos/your-username/artifacts/releases" \
+          #   -H "Authorization: token ${{ secrets.GITEE_TOKEN }}" \
+          #   -F "file=@gitee-artifacts/http_client"

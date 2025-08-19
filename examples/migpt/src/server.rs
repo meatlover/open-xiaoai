@@ -10,7 +10,8 @@ use open_xiaoai::utils::task::TaskManager;
 
 use serde_json::json;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::{accept_async, accept_hdr_async};
+use tokio_tungstenite::tungstenite::handshake::server::{Request as WsRequest, Response as WsResponse};
 
 use crate::node::NodeManager;
 
@@ -30,7 +31,20 @@ async fn test() -> Result<(), AppError> {
 
 impl AppServer {
     pub async fn connect(stream: TcpStream) -> Result<WsStream, AppError> {
-        let ws_stream = accept_async(stream).await?;
+        // Log handshake request to help debug Cloudflare/headers
+        let cb = |req: &WsRequest, resp: WsResponse| -> Result<WsResponse, tokio_tungstenite::tungstenite::Error> {
+            let path = req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+            println!(
+                "🛰️  WS handshake: method={} path={} host={:?}",
+                req.method(),
+                path,
+                req.headers().get("host").and_then(|v| v.to_str().ok())
+            );
+            Ok(resp)
+        };
+        let ws_stream = accept_hdr_async(stream, cb)
+            .await
+            .map_err(|e| AppError::from(format!("websocket accept failed: {e}")))?;
         Ok(WsStream::Server(ws_stream))
     }
 
@@ -47,17 +61,20 @@ impl AppServer {
     }
 
     async fn handle_connection(stream: TcpStream, addr: std::net::SocketAddr) {
-        let Ok(ws_stream) = AppServer::connect(stream).await else {
-            println!("❌ 连接异常: {}", addr);
-            return;
-        };
-        println!("✅ 已连接: {:?}", addr);
-        AppServer::init(ws_stream).await;
-        if let Err(e) = MessageManager::instance().process_messages().await {
-            println!("❌ 消息处理异常: {}", e);
+        match AppServer::connect(stream).await {
+            Ok(ws_stream) => {
+                println!("✅ 已连接: {:?}", addr);
+                AppServer::init(ws_stream).await;
+                if let Err(e) = MessageManager::instance().process_messages().await {
+                    println!("❌ 消息处理异常: {}", e);
+                }
+                AppServer::dispose().await;
+                println!("❌ 已断开连接");
+            }
+            Err(e) => {
+                println!("❌ 连接异常: {} - {}", addr, e);
+            }
         }
-        AppServer::dispose().await;
-        println!("❌ 已断开连接");
     }
 
     async fn init(ws_stream: WsStream) {

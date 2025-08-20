@@ -17,6 +17,7 @@ struct Config {
     server_proxy: Option<ServerProxyConfig>,
     prompt: PromptConfig,
     audio: Option<AudioConfig>,
+    voice: Option<VoiceConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +51,11 @@ struct AudioConfig {
     sample_rate: u32,
     channels: u32,
     format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VoiceConfig {
+    debug: Option<bool>,
 }
 
 pub enum LLMService {
@@ -376,11 +382,81 @@ impl MultiModeClient {
             }
             LLMService::Direct(_) => {
                 println!("🚀 Starting direct mode production client...");
-                // For direct mode, we could implement audio processing loop here
-                // For now, just run the test
-                self.run_test_loop().await;
+                
+                // Check for voice configuration
+                if let Some(voice_config) = &self.config.voice {
+                    println!("🎤 Voice features enabled - monitoring KWS events");
+                    self.run_kws_monitoring(voice_config).await?;
+                } else {
+                    println!("📝 No voice config found, running test loop");
+                    self.run_test_loop().await;
+                }
             }
         }
+        Ok(())
+    }
+
+    pub async fn run_kws_monitoring(&self, voice_config: &VoiceConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use open_xiaoai::services::monitor::{
+            kws::{KwsMonitor, KwsMonitorEvent}
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        println!("🎤 Starting KWS monitoring (Sherpa-ONNX based)");
+        println!("📋 This client monitors /tmp/open-xiaoai/kws.log for wake word events");
+        
+        let wake_detected = Arc::new(AtomicBool::new(false));
+        let debug_flag = voice_config.debug.unwrap_or(false);
+        
+        if debug_flag {
+            println!("🐛 Debug mode enabled");
+        }
+
+        // Monitor KWS log for wake word events from Sherpa-ONNX
+        KwsMonitor::start(move |event| {
+            let wake_detected = Arc::clone(&wake_detected);
+            let debug_flag = debug_flag;
+            async move {
+                if debug_flag {
+                    println!("🐛 Debug: KWS event: {:?}", event);
+                }
+                
+                match event {
+                    KwsMonitorEvent::Keyword(keyword) => {
+                        println!("🎯 Wake word detected by Sherpa-ONNX: {}", keyword);
+                        wake_detected.store(true, Ordering::Relaxed);
+                        
+                        // TODO: Process the wake word event
+                        // - Could trigger LLM conversation
+                        // - Could play response audio
+                        // - Could send to server
+                        
+                        // Reset after 10 seconds
+                        let wake_detected_reset = Arc::clone(&wake_detected);
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                            wake_detected_reset.store(false, Ordering::Relaxed);
+                            if debug_flag {
+                                println!("🐛 Debug: Wake word detection reset");
+                            }
+                        });
+                    }
+                    KwsMonitorEvent::Started => {
+                        println!("🎤 KWS monitoring started - waiting for Sherpa-ONNX events");
+                        println!("💡 Make sure KWS service is running: /data/init.sh");
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
+        }).await;
+
+        // Keep the process running
+        println!("🔄 KWS monitoring active, press Ctrl+C to stop");
+        tokio::signal::ctrl_c().await?;
+        println!("🛑 Shutting down KWS monitoring");
+        
         Ok(())
     }
 }

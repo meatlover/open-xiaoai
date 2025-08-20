@@ -1,22 +1,22 @@
 {
   "_comment": "Mode options: 'direct' = direct LLM API calls (bypass server), 'proxy' = use server proxy (traditional)",
-  "mode": "proxy",
+  "mode": "direct",
   "openai": {
     "_comment": "OpenAI config (used only in direct mode)",
-    "baseURL": "${OPENAI_BASE_URL}",
-    "apiKey": "${OPENAI_API_KEY}",
-    "model": "${OPENAI_MODEL}",
+    "baseURL": "https://api.openai.com/v1",
+    "apiKey": "sk-test-key-here",
+    "model": "gpt-3.5-turbo",
     "timeout": 30,
     "maxTokens": 1000,
     "temperature": 0.7
   },
   "serverProxy": {
     "_comment": "Server proxy config (used only in proxy mode)",
-    "baseURL": "${SERVER_PROXY_URL}",
+    "baseURL": "http://localhost:3000",
     "timeout": 30
   },
   "prompt": {
-    "system": "你是一个智能助手，请根据用户的问题给出回答。"
+    "system": "你是一个智能助手，请根据用户的问题给出简短的回答。"
   },
   "audio": {
     "sampleRate": 16000,
@@ -25,8 +25,8 @@
   },
   "voice": {
     "_comment": "Voice interaction configuration",
-    "customWakeWords": ["小爱老师"],
-    "interruptWords": ["停止", "暂停", "稍等", "等一下"],
+    "customWakeWords": ["小智", "智能助手", "hey assistant"],
+    "interruptWords": ["停止", "暂停", "闭嘴", "stop", "pause"],
     "wakeWordEnabled": true,
     "originalAgentEnabled": true
   }

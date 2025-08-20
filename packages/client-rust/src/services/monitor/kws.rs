@@ -12,6 +12,7 @@ use super::file::{FileMonitor, FileMonitorEvent};
 pub enum KwsMonitorEvent {
     Started,
     Keyword(String),
+    CustomKeyword(String),
 }
 
 pub struct KwsMonitor;
@@ -52,8 +53,21 @@ impl KwsMonitor {
             .await;
     }
 
+    pub async fn start_with_custom_words<F, Fut>(on_update: F, custom_wake_words: Vec<String>)
+    where
+        F: Fn(KwsMonitorEvent) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), AppError>> + Send + 'static,
+    {
+        // For sherpa-onnx based system, just redirect to regular start
+        // The custom wake words are configured in /data/open-xiaoai/kws/keywords.txt
+        println!("📝 Using Sherpa-ONNX KWS system");
+        println!("💡 Configure wake words in /data/open-xiaoai/kws/keywords.txt");
+        Self::start(on_update).await;
+    }
+
     pub async fn stop() {
         LAST_TIMESTAMP.store(0, Ordering::Relaxed);
         FileMonitor::instance().stop(KWS_FILE_PATH).await;
+        FileMonitor::instance().stop("/tmp/mico_aivs_lab/instruction.log").await;
     }
 }

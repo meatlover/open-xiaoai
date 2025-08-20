@@ -1,0 +1,5 @@
+# Phonetic mapping for 土豆土豆
+# Using only tokens confirmed to exist in tokens.txt: ǔ, ā, ì, ǐ, etc.
+# Simplified approximation since full pinyin tokens may not be available
+
+t ǔ d ā t ǔ d ā @土豆土豆

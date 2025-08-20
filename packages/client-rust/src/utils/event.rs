@@ -48,7 +48,7 @@ impl EventBus {
     }
 
     pub async fn publish(&self, event: Event) {
-        let Some(callbacks) = self.get_callbacks(&event.event).await else {
+        let Some(callbacks) = self.get_callbacks(&event.name).await else {
             return;
         };
         for callback in callbacks {
@@ -58,10 +58,10 @@ impl EventBus {
     }
 
     pub async fn publish_async(&self, event: Event) {
-        let Some(callbacks) = self.get_callbacks(&event.event).await else {
+        let Some(callbacks) = self.get_callbacks(&event.name).await else {
             return;
         };
-        let tag = format!("EventBus-{}", event.event);
+        let tag = format!("EventBus-{}", event.name);
         for callback in callbacks {
             let event = event.clone();
             let task = tokio::spawn(async move {

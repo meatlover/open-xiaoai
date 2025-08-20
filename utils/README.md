@@ -1,14 +1,79 @@
-# Boot Script for Mi Device Auto-Start
+# Open-XiaoAI Utilities
 
-This directory contains scripts to automatically start the Open-XiaoAI client on Mi device boot.
+This directory contains utility scripts for managing Open-XiaoAI deployments and features.
 
-## Files
+## Scripts Overview
+
+### 🎙️ KWS (Keyword Wake-up Service) Scripts
+
+- `deploy-kws.sh` - Complete KWS deployment script
+- `setup-kws.sh` - Basic KWS setup on Mi device
+- `manage-wake-words.sh` - Wake words and replies management
+- `keywords.py` - Chinese text to pinyin keywords generator
+
+### 🚀 Build and Deployment Scripts
+
+- `remote-build-client.sh` - Remote build script for Rust client
+- `device-copy.sh` - File transfer utility for Mi devices
+
+### 🔄 Boot and Auto-Start Scripts
 
 - `boot.sh` - Main boot script that runs on Mi device startup
 - `install-boot.sh` - Helper script to install boot.sh to Mi device
-- `README.md` - This documentation
 
-## Features
+## Quick Start Guide
+
+### 🎙️ Deploy KWS (Customized Wake Words)
+
+```bash
+# Complete KWS deployment
+./deploy-kws.sh
+
+# This will:
+# - Check dependencies and connectivity
+# - Install Sherpa-ONNX KWS system
+# - Configure default wake words (天猫精灵, 小度小度, etc.)
+# - Enable auto-start
+# - Verify deployment
+```
+
+### ⚙️ Manage Custom Wake Words
+
+```bash
+# Download current config from device
+./manage-wake-words.sh download
+
+# Edit keywords locally
+./manage-wake-words.sh edit-keywords
+
+# Upload keywords to device
+./manage-wake-words.sh upload-keywords
+
+# Test with debug mode
+./manage-wake-words.sh debug
+```
+
+### 🔨 Build and Deploy Client
+
+```bash
+# Build remotely (bypass China firewall)
+./remote-build-client.sh release
+
+# Deploy to device
+./device-copy.sh to /tmp/client /data/open-xiaoai/client
+
+# Run on device
+ssh root@192.168.143.211 "cd /data/open-xiaoai && ./client config.json --debug"
+```
+
+## Environment Variables
+
+All scripts support these environment variables:
+- `DEVICE_IP` - Device IP address (default: 192.168.143.211)
+- `DEVICE_USER` - Device username (default: root)
+- `DEVICE_PASS` - Device password (default: open-xiaoai)
+
+## Boot Script Features
 
 ### 🚀 Auto-Detection Mode
 The boot script automatically detects the running mode from `config.json`:

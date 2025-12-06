@@ -3,7 +3,8 @@ use open_xiaoai::services::monitor::kws::KwsMonitor;
 use serde_json::json;
 use std::time::Duration;
 use tokio::time::sleep;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{connect_async, Connector};
+use tokio_native_tls::TlsConnector as TokioTlsConnector;
 
 use open_xiaoai::base::AppError;
 use open_xiaoai::base::VERSION;
@@ -15,6 +16,7 @@ use open_xiaoai::services::connect::message::{MessageManager, WsStream};
 use open_xiaoai::services::connect::rpc::RPC;
 use open_xiaoai::services::monitor::instruction::InstructionMonitor;
 use open_xiaoai::services::monitor::playing::PlayingMonitor;
+use open_xiaoai::services::connect::tls_connector::{TlsConfig, build_tls_connector};
 
 struct AppClient {
     kws_monitor: KwsMonitor,
@@ -32,7 +34,22 @@ impl AppClient {
     }
 
     pub async fn connect(&self, url: &str) -> Result<WsStream, AppError> {
-        let (ws_stream, _) = connect_async(url).await?;
+        let tls_config = TlsConfig::from_env();
+        
+        let (ws_stream, _) = if tls_config.is_enabled() {
+            // Use custom TLS connector with mTLS support
+            println!("🔐 启用 mTLS 客户端证书认证");
+            let native_connector = build_tls_connector(&tls_config)
+                .map_err(|e| AppError::Msg(format!("Failed to build TLS connector: {}", e)))?;
+            let tokio_connector = TokioTlsConnector::from(native_connector);
+            let connector = Connector::NativeTls(tokio_connector);
+            
+            connect_async(url).await?
+        } else {
+            // Use default connector (basic TLS without client cert)
+            connect_async(url).await?
+        };
+        
         Ok(WsStream::Client(ws_stream))
     }
 

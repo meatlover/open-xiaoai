@@ -1,0 +1,42 @@
+name: Build ARM binary for Xiaomi device
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'packages/client-rust/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04  # Ubuntu 20.04 has GLIBC 2.31
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: armv7-unknown-linux-gnueabihf
+        override: true
+    
+    - name: Install ARM cross-compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-arm-linux-gnueabihf
+    
+    - name: Build armhf binary
+      working-directory: packages/client-rust
+      run: |
+        cargo build --release --target armv7-unknown-linux-gnueabihf
+    
+    - name: Check GLIBC requirements
+      run: |
+        readelf -V packages/client-rust/target/armv7-unknown-linux-gnueabihf/release/client | grep GLIBC || true
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: xiaoai-client-armhf
+        path: packages/client-rust/target/armv7-unknown-linux-gnueabihf/release/client

@@ -2,6 +2,22 @@
 
 This guide explains how to install additional Linux utilities on your Xiaomi Smart Speaker Pro (OH2P) device despite its limited disk space and restricted filesystem.
 
+## Built-in Utilities
+
+**Good news!** The OH2P firmware (v1.58.1) already includes several essential utilities:
+
+- **wget** (GNU Wget 1.19.2) - Download files from web
+- **curl** (curl 7.55.1) - Transfer data with URLs
+- **busybox** - Multi-call binary with common Unix utilities
+
+Check what's available:
+```bash
+ssh root@<device-ip>
+which wget curl busybox
+wget --version
+curl --version
+```
+
 ## Prerequisites
 
 - OH2P device with patched firmware and SSH access
@@ -13,99 +29,63 @@ Understanding the device constraints:
 
 1. **Limited disk space**: Only ~20-30MB typically available in `/data`
 2. **Read-only filesystem**: Most system directories (`/`, `/etc`, `/usr`, `/bin`) are read-only
-3. **Writable locations**:
+3. **Architecture**: aarch64 (ARM 64-bit)
+4. **Writable locations**:
    - `/data` - persistent, writable ✓
    - `/tmp` - writable but cleared on reboot, may have noexec restrictions ✗
-4. **Limited built-in utilities**: Basic BusyBox utilities only
 
-## Strategy
+## Installing Additional Utilities
 
-Install static binaries to `/data/bin` and add to PATH:
+If you need utilities not included in the firmware, you can install static binaries to `/data/bin`:
+
+### Step 1: Create binary directory
 
 ```bash
-# On device
+ssh root@<device-ip>
 mkdir -p /data/bin
 export PATH="/data/bin:$PATH"
 ```
 
 The `/data/init.sh` script (created during SSH key setup) automatically adds `/data/bin` to PATH on boot.
+### Step 2: Download Additional Binaries (if needed)
 
-## Method 1: Using Deployment Script (Recommended)
-
-Use the provided script to automate utility installation:
-
-```bash
-# From repository root
-cd scripts
-./install-utilities.sh <device-ip>
-```
-
-This installs:
-- `busybox` (multi-call binary with 300+ utilities)
-- `curl` (for HTTP downloads)
-- `wget` (alternative HTTP downloader)
-
-## Method 2: Manual Installation
-
-### Step 1: Download Static Binaries
-
-On your local machine, download ARM static binaries:
+The firmware already includes wget and curl, but if you need additional tools, download ARM64 (aarch64) static binaries:
 
 ```bash
-# BusyBox (armv7l static)
-curl -Lo busybox https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
-chmod +x busybox
+# Example: Download a specific tool (replace with actual aarch64 binary URL)
+# On your local machine:
+curl -Lo mytool https://example.com/path/to/mytool-aarch64
+chmod +x mytool
 
-# Curl (armv7 static) - from curl.se
-curl -Lo curl https://github.com/moparisthebest/static-curl/releases/latest/download/curl-arm
-chmod +x curl
+# Upload to device
+scp -o HostKeyAlgorithms=+ssh-rsa mytool root@<device-ip>:/data/bin/
 
-# Wget (armv7 static)
-curl -Lo wget https://github.com/ernw/static-toolbox/releases/download/1.0.1/wget-armv7
-chmod +x wget
-```
-
-**Note**: The device uses ARMv7-A architecture (Cortex-A35). Use `armv7l`, `armhf`, or `arm-linux-gnueabihf` binaries.
-
-### Step 2: Upload to Device
-
-Use `scp` to upload binaries:
-
-```bash
-# If using SSH key authentication
-scp -o HostKeyAlgorithms=+ssh-rsa busybox curl wget root@192.168.31.140:/data/bin/
-
-# Or with password
-scp -o HostKeyAlgorithms=+ssh-rsa busybox curl wget root@<device-ip>:/data/bin/
-```
-
-### Step 3: Set Permissions
-
-```bash
+# Or download directly on device using built-in wget:
 ssh root@<device-ip>
-chmod +x /data/bin/*
+cd /data/bin
+wget https://example.com/path/to/mytool-aarch64 -O mytool
+chmod +x mytool
 ```
 
-### Step 4: Test Utilities
+**Important**: The device architecture is **aarch64** (ARM 64-bit), not armv7l. Use binaries compiled for:
+- `aarch64`
+- `arm64`
+- `aarch64-linux-gnu`
+
+### Step 3: Test Utilities
 
 ```bash
-# Test busybox
-/data/bin/busybox --help
+# Test built-in wget
+wget --version
 
-# Create symlinks for common utilities (optional)
-cd /data/bin
-for util in tar gzip gunzip unzip vi less; do
-    ln -s busybox $util
-done
+# Test built-in curl  
+curl --version
 
-# Test curl
-/data/bin/curl --version
-
-# Test wget
-/data/bin/wget --version
+# Test any additional binaries you installed
+/data/bin/mytool --version
 ```
 
-### Step 5: Add to PATH (Persistent)
+### Step 4: Add to PATH (Persistent)
 
 The `/data/init.sh` script should already include PATH setup. Verify:
 

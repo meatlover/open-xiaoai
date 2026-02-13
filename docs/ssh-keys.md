@@ -85,13 +85,22 @@ cat > /data/init.sh << 'EOF'
 
 # Setup SSH public key authentication
 if [ -f /data/.ssh/authorized_keys ]; then
-    # Dropbear reads from /etc/dropbear/authorized_keys or /root/.ssh/authorized_keys
-    # Since /etc is read-only, we use /root which is writable on some firmware
-    mkdir -p /root/.ssh
-    ln -sf /data/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null || \
-        cp /data/.ssh/authorized_keys /root/.ssh/authorized_keys
-    chmod 700 /root/.ssh
-    chmod 600 /root/.ssh/authorized_keys
+    # CRITICAL: Dropbear reads authorized_keys from the user's home directory
+    # as defined in /etc/passwd (which is /root for the root user).
+    # Since /root is on a read-only SquashFS filesystem, we must use a bind mount.
+    
+    # Create temporary overlay directory for /root
+    mkdir -p /tmp/root_overlay/.ssh
+    
+    # Copy authorized_keys from persistent storage
+    cp /data/.ssh/authorized_keys /tmp/root_overlay/.ssh/authorized_keys
+    
+    # Set correct permissions (critical for SSH security)
+    chmod 700 /tmp/root_overlay/.ssh
+    chmod 600 /tmp/root_overlay/.ssh/authorized_keys
+    
+    # Bind mount the overlay to /root so Dropbear can find it
+    mount --bind /tmp/root_overlay /root
 fi
 EOF
 
@@ -137,7 +146,16 @@ ssh xiaoai
 
 ### Connection still asks for password
 
-1. Check permissions on device:
+1. Check if bind mount is active:
+```bash
+ssh -o HostKeyAlgorithms=+ssh-rsa root@<device-ip>
+mount | grep /root
+ls -la /root/.ssh/
+```
+
+You should see `/tmp/root_overlay on /root type none (rw,bind)` in the mount output.
+
+2. Check permissions on device:
 ```bash
 ssh -o HostKeyAlgorithms=+ssh-rsa root@<device-ip>
 ls -la /root/.ssh/
@@ -150,17 +168,19 @@ Expected permissions:
 - `/data/.ssh/` → 700 (drwx------)
 - `/data/.ssh/authorized_keys` → 600 (-rw-------)
 
-2. Check if key is properly formatted:
+3. Check if key is properly formatted:
 ```bash
 cat /root/.ssh/authorized_keys
 ```
 
-Should show your public key in format: `ssh-rsa AAAAB3...`
+Should show your public key in format: `ssh-rsa AAAAB3...` or `ssh-ed25519 AAAAC3...`
 
-3. Check Dropbear logs:
+4. Test with verbose SSH logging:
 ```bash
-logread | grep -i dropbear
+ssh -vvv -i ~/.ssh/xiaoai_key -o HostKeyAlgorithms=+ssh-rsa root@<device-ip>
 ```
+
+Look for "Offering public key" and "Server accepts key" messages.
 
 ### Key authentication fails after reboot
 
@@ -170,7 +190,41 @@ ls -la /data/init.sh
 cat /data/init.sh
 ```
 
-The init script should be executable (`-rwxr-xr-x`) and contain the SSH setup code.
+The init script should be executable (`-rwxr-xr-x`) and contain the SSH setup code with the bind mount.
+
+## Technical Details
+
+### Why Bind Mount is Required
+
+The OH2P firmware has a unique filesystem layout that requires a special approach for SSH key authentication:
+
+1. **Read-only root filesystem**: The root filesystem (`/`) is mounted from a SquashFS image on `/dev/mtdblock4`, which is read-only and compressed.
+
+2. **Dropbear's authorized_keys lookup**: Dropbear (the SSH daemon) determines where to look for `authorized_keys` by reading the user's home directory from `/etc/passwd`:
+   ```
+   root:x:0:0:root:/root:/bin/ash
+   ```
+   This specifies `/root` as the home directory, so Dropbear looks for `/root/.ssh/authorized_keys`.
+
+3. **The HOME environment variable doesn't help**: Even though the patched firmware's init script sets `HOME=/tmp` for the Dropbear process, Dropbear's authentication code uses `getpwnam()` to look up the user's home directory from `/etc/passwd`, NOT the `HOME` environment variable.
+
+4. **The bind mount solution**: Since we cannot write to `/root` directly (read-only filesystem) and cannot change `/etc/passwd` (also read-only), we use a bind mount:
+   - Create `/tmp/root_overlay/.ssh/` with our authorized_keys
+   - Mount it with `mount --bind /tmp/root_overlay /root`
+   - Now `/root/.ssh/authorized_keys` exists and is readable by Dropbear
+
+This approach was discovered through `strace` analysis, which revealed:
+```
+stat64("/root/.ssh", ...) = -1 ENOENT (No such file or directory)
+```
+
+### Alternative Approaches That Don't Work
+
+- **Copying to `/root/.ssh/`**: Fails because `/root` is read-only
+- **Symlinking `/root/.ssh` to `/data/.ssh/`**: Can't create symlink in read-only `/root`  
+- **Using `/tmp/.ssh/` with HOME=/tmp**: Dropbear ignores the `HOME` variable
+- **Bind mounting just `.ssh` directory**: Requires `/root/.ssh` to exist first (can't create it)
+- **Modifying `/etc/passwd`**: File is read-only on SquashFS
 
 ## Security Notes
 

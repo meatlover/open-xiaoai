@@ -128,18 +128,24 @@ setup_ssh_keys() {
     if [ -f /data/.ssh/authorized_keys ]; then
         echo "[init.sh] Setting up SSH key authentication..."
         
-        # Create root SSH directory if it does not exist
-        mkdir -p /root/.ssh 2>/dev/null
+        # CRITICAL: /root is on read-only SquashFS, so we need a bind mount
+        # Dropbear looks for authorized_keys in /root/.ssh/ (from /etc/passwd)
+        # not in $HOME/.ssh/ (even though Dropbear'\''s HOME is set to /tmp)
         
-        # Copy authorized_keys from persistent storage to root
-        # We use cp instead of symlink because Dropbear may not follow symlinks
-        cp /data/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null
+        # Create temporary overlay directory for /root
+        mkdir -p /tmp/root_overlay/.ssh
+        
+        # Copy authorized_keys from persistent storage
+        cp /data/.ssh/authorized_keys /tmp/root_overlay/.ssh/authorized_keys
         
         # Set correct permissions (critical for SSH security)
-        chmod 700 /root/.ssh 2>/dev/null
-        chmod 600 /root/.ssh/authorized_keys 2>/dev/null
+        chmod 700 /tmp/root_overlay/.ssh
+        chmod 600 /tmp/root_overlay/.ssh/authorized_keys
         
-        echo "[init.sh] SSH key authentication configured"
+        # Bind mount the overlay to /root so Dropbear can find it
+        mount --bind /tmp/root_overlay /root
+        
+        echo "[init.sh] SSH key authentication configured (bind mounted to /root)"
     fi
 }
 

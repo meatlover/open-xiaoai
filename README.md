@@ -47,7 +47,8 @@
 
 1. 刷机更新小爱音箱补丁固件，开启并 SSH 连接到小爱音箱 👉 [教程](docs/flash.md)
 2. 在小爱音箱上安装运行 Client 端补丁程序 👉 [教程](packages/client-rust/README.md)
-3. 运行以下演示程序，体验小爱音箱的全新能力 ✨
+3. **(可选) 安装 AI Bridge 扩展包** - 支持 Python 3、WebSocket、mTLS 和 SOCKS5 代理 👉 [查看详情](packages/ai-bridge/README.md)
+4. 运行以下演示程序，体验小爱音箱的全新能力 ✨
    - 👉 [小爱音箱接入小智 AI](examples/xiaozhi/README.md)
    - 👉 [小爱音箱自定义唤醒词](examples/kws/README.md)
    - 👉 [小爱音箱接入 MiGPT（完美版）](examples/migpt/README.md)

@@ -1,0 +1,294 @@
+#!/bin/sh
+#
+# AI Bridge Service for XiaoAI
+# Init script for LEDE/OpenWrt
+#
+
+START=99
+STOP=10
+USE_PROCD=1
+
+# Configuration
+INSTALL_DIR="/data"
+OPT_DIR="${INSTALL_DIR}/opt"
+ETC_DIR="${INSTALL_DIR}/etc"
+LOG_DIR="${INSTALL_DIR}/log"
+PID_FILE="/var/run/ai-bridge.pid"
+REDSOCKS_PID="/var/run/redsocks.pid"
+
+# Source environment
+[ -f "${ETC_DIR}/ai-bridge/env" ] && . "${ETC_DIR}/ai-bridge/env"
+
+# Add Entware to PATH
+export PATH="${OPT_DIR}/bin:${OPT_DIR}/sbin:$PATH"
+export LD_LIBRARY_PATH="${OPT_DIR}/lib:$LD_LIBRARY_PATH"
+
+# Logging
+log() {
+    logger -t ai-bridge "$1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "${LOG_DIR}/ai-bridge.log"
+}
+
+# Check if service is running
+check_running() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Start redsocks proxy
+start_proxy() {
+    if [ "${REDSOCKS_ENABLED}" = "true" ] || [ "${REDSOCKS_ENABLED}" = "1" ]; then
+        if [ -f "${OPT_DIR}/bin/redsocks" ] && [ -f "${ETC_DIR}/redsocks.conf" ]; then
+            log "Starting redsocks proxy..."
+            ${OPT_DIR}/bin/redsocks -c "${ETC_DIR}/redsocks.conf" -p "$REDSOCKS_PID" &
+            sleep 1
+            if [ -f "$REDSOCKS_PID" ]; then
+                log "Redsocks started (PID: $(cat $REDSOCKS_PID))"
+            else
+                log "WARNING: Redsocks failed to start"
+            fi
+        fi
+    fi
+}
+
+# Stop redsocks proxy
+stop_proxy() {
+    if [ -f "$REDSOCKS_PID" ]; then
+        PID=$(cat "$REDSOCKS_PID")
+        log "Stopping redsocks proxy (PID: $PID)..."
+        kill "$PID" 2>/dev/null || kill -9 "$PID" 2>/dev/null
+        rm -f "$REDSOCKS_PID"
+    fi
+}
+
+# Generate mTLS certificates (if not exists)
+setup_mtls() {
+    local cert_dir="${ETC_DIR}/ssl"
+    local ca_cert="${cert_dir}/ca.crt"
+    local client_cert="${cert_dir}/client.crt"
+    local client_key="${cert_dir}/client.key"
+    
+    # Create directory if not exists
+    mkdir -p "$cert_dir"
+    chmod 700 "$cert_dir"
+    
+    # Check if certificates already exist
+    if [ -f "$ca_cert" ] && [ -f "$client_cert" ] && [ -f "$client_key" ]; then
+        log "mTLS certificates already configured"
+        return 0
+    fi
+    
+    log "Setting up mTLS certificates..."
+    
+    # Check if OpenSSL 3.x is available
+    if [ ! -x "${OPT_DIR}/bin/openssl" ]; then
+        log "ERROR: OpenSSL not found at ${OPT_DIR}/bin/openssl"
+        return 1
+    fi
+    
+    OPENSSL="${OPT_DIR}/bin/openssl"
+    
+    # Generate CA key and certificate (self-signed for local use)
+    if [ ! -f "$ca_cert" ]; then
+        log "Generating CA certificate..."
+        $OPENSSL genrsa -out "${cert_dir}/ca.key" 4096 2>/dev/null
+        $OPENSSL req -new -x509 -days 3650 -key "${cert_dir}/ca.key" \
+            -out "$ca_cert" \
+            -subj "/C=CN/O=XiaoAI/CN=XiaoAI-Root-CA" 2>/dev/null
+        chmod 600 "${cert_dir}/ca.key"
+        log "CA certificate generated"
+    fi
+    
+    # Generate client key and certificate
+    if [ ! -f "$client_key" ]; then
+        log "Generating client key..."
+        $OPENSSL genrsa -out "$client_key" 2048 2>/dev/null
+        chmod 600 "$client_key"
+    fi
+    
+    if [ ! -f "$client_cert" ]; then
+        log "Generating client certificate..."
+        local csr="${cert_dir}/client.csr"
+        $OPENSSL req -new -key "$client_key" \
+            -out "$csr" \
+            -subj "/C=CN/O=XiaoAI/CN=$(hostname)-$(cat /proc/sys/kernel/random/uuid | cut -d'-' -f1)" 2>/dev/null
+        
+        $OPENSSL x509 -req -days 365 -in "$csr" \
+            -CA "$ca_cert" -CAkey "${cert_dir}/ca.key" \
+            -CAcreateserial -out "$client_cert" 2>/dev/null
+        
+        rm -f "$csr" "${cert_dir}/ca.srl"
+        log "Client certificate generated"
+    fi
+    
+    # Update environment file
+    sed -i "s|MTLS_CA_CERT=.*|MTLS_CA_CERT=$ca_cert|" "${ETC_DIR}/ai-bridge/env"
+    sed -i "s|MTLS_CLIENT_CERT=.*|MTLS_CLIENT_CERT=$client_cert|" "${ETC_DIR}/ai-bridge/env"
+    sed -i "s|MTLS_CLIENT_KEY=.*|MTLS_CLIENT_KEY=$client_key|" "${ETC_DIR}/ai-bridge/env"
+    
+    log "mTLS setup complete"
+}
+
+# Start service
+start() {
+    log "Starting AI Bridge service..."
+    
+    # Check if already running
+    if check_running; then
+        log "AI Bridge is already running (PID: $(cat $PID_FILE))"
+        return 0
+    fi
+    
+    # Create log directory
+    mkdir -p "$LOG_DIR"
+    
+    # Setup mTLS certificates
+    setup_mtls
+    
+    # Start proxy if enabled
+    start_proxy
+    
+    # Check Python
+    if [ ! -x "$PYTHON" ]; then
+        PYTHON="${OPT_DIR}/bin/python3"
+    fi
+    
+    if [ ! -x "$PYTHON" ]; then
+        log "ERROR: Python not found"
+        return 1
+    fi
+    
+    # Start AI Bridge
+    log "Starting AI Bridge..."
+    nohup "$PYTHON" "${INSTALL_DIR}/bin/ai-bridge.py" \
+        --config "${ETC_DIR}/ai-bridge/config.yaml" \
+        >> "${LOG_DIR}/ai-bridge.log" 2>&1 &
+    
+    PID=$!
+    echo $PID > "$PID_FILE"
+    
+    # Wait to ensure it started
+    sleep 2
+    if kill -0 "$PID" 2>/dev/null; then
+        log "AI Bridge started successfully (PID: $PID)"
+        return 0
+    else
+        log "ERROR: AI Bridge failed to start"
+        rm -f "$PID_FILE"
+        return 1
+    fi
+}
+
+# Stop service
+stop() {
+    log "Stopping AI Bridge service..."
+    
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            log "Stopping AI Bridge (PID: $PID)..."
+            kill "$PID"
+            
+            # Wait for graceful shutdown
+            for i in 1 2 3 4 5; do
+                if ! kill -0 "$PID" 2>/dev/null; then
+                    break
+                fi
+                sleep 1
+            done
+            
+            # Force kill if still running
+            if kill -0 "$PID" 2>/dev/null; then
+                log "Force stopping AI Bridge..."
+                kill -9 "$PID"
+            fi
+        fi
+        rm -f "$PID_FILE"
+    fi
+    
+    # Stop proxy
+    stop_proxy
+    
+    log "AI Bridge stopped"
+}
+
+# Restart service
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+# Check status
+status() {
+    if check_running; then
+        PID=$(cat "$PID_FILE")
+        echo "AI Bridge is running (PID: $PID)"
+        
+        # Show recent log
+        if [ -f "${LOG_DIR}/ai-bridge.log" ]; then
+            echo ""
+            echo "Recent logs:"
+            tail -n 10 "${LOG_DIR}/ai-bridge.log"
+        fi
+        
+        # Show proxy status
+        if [ -f "$REDSOCKS_PID" ]; then
+            echo ""
+            echo "Redsocks proxy is running (PID: $(cat $REDSOCKS_PID))"
+        fi
+        
+        return 0
+    else
+        echo "AI Bridge is not running"
+        return 1
+    fi
+}
+
+# Show usage
+usage() {
+    echo "Usage: $0 {start|stop|restart|status|setup-mtls|proxy-start|proxy-stop}"
+    echo ""
+    echo "Commands:"
+    echo "  start       Start AI Bridge service"
+    echo "  stop        Stop AI Bridge service"
+    echo "  restart     Restart AI Bridge service"
+    echo "  status      Show service status and recent logs"
+    echo "  setup-mtls  Generate/regenerate mTLS certificates"
+    echo "  proxy-start Start SOCKS5 proxy (redsocks)"
+    echo "  proxy-stop  Stop SOCKS5 proxy (redsocks)"
+}
+
+# Main
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        restart
+        ;;
+    status)
+        status
+        ;;
+    setup-mtls)
+        setup_mtls
+        ;;
+    proxy-start)
+        start_proxy
+        ;;
+    proxy-stop)
+        stop_proxy
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac

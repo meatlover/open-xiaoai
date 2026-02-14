@@ -1,0 +1,175 @@
+{
+  "version": "1.0.0",
+  "architecture": "aarch64-k3.10",
+  "repository": "https://bin.entware.net/aarch64-k3.10",
+  "packages": {
+    "core": {
+      "python3": {
+        "name": "python3",
+        "version": "3.11.10-1",
+        "filename": "python3_3.11.10-1_aarch64-3.10.ipk",
+        "size": 3152039,
+        "installed_size": 8232960,
+        "sha256": "c25be11e656e69a3cd249733357f0aed68d217555aa79e55f52870336e39f32e",
+        "description": "Python 3 programming language",
+        "dependencies": [
+          "libc",
+          "libssp",
+          "librt",
+          "libpthread",
+          "python3-light",
+          "python3-asyncio",
+          "python3-cgi",
+          "python3-cgitb",
+          "python3-codecs",
+          "python3-ctypes",
+          "python3-dbm",
+          "python3-decimal",
+          "python3-distutils",
+          "python3-email",
+          "python3-logging",
+          "python3-lzma",
+          "python3-multiprocessing",
+          "python3-ncurses",
+          "python3-openssl",
+          "python3-pydoc",
+          "python3-readline",
+          "python3-sqlite3",
+          "python3-unittest",
+          "python3-urllib",
+          "python3-uuid",
+          "python3-xml"
+        ]
+      },
+      "libopenssl3": {
+        "name": "libopenssl",
+        "version": "3.5.0-1",
+        "filename": "libopenssl_3.5.0-1_aarch64-3.10.ipk",
+        "size": 2463957,
+        "installed_size": 6666240,
+        "sha256": "5a6cac598d5c2b9481e7eb98b6152a0c0041f6f4b945b74a98f4ee2665076558",
+        "description": "OpenSSL 3.x shared libraries",
+        "dependencies": [
+          "libc",
+          "libssp",
+          "librt",
+          "libpthread",
+          "zlib"
+        ]
+      },
+      "openssl-util": {
+        "name": "openssl-util",
+        "version": "3.5.0-1",
+        "filename": "openssl-util_3.5.0-1_aarch64-3.10.ipk",
+        "size": 383092,
+        "installed_size": 983040,
+        "sha256": "19be52ac5fb4e55ebe433dde9bfbe58d9a91df0b956516721089749b5b61bfd8",
+        "description": "OpenSSL command-line utility",
+        "dependencies": [
+          "libc",
+          "libssp",
+          "librt",
+          "libpthread",
+          "libopenssl",
+          "libopenssl-conf"
+        ]
+      },
+      "python3-pip": {
+        "name": "python3-pip",
+        "version": "23.3.1-1",
+        "filename": "python3-pip_23.3.1-1_aarch64-3.10.ipk",
+        "size": 2846858,
+        "installed_size": 8089600,
+        "sha256": "841002f6f411abf1898991e6d76f5df45279d746f12379a9ce503c0c36557d7c",
+        "description": "Python package installer",
+        "dependencies": [
+          "libc",
+          "libssp",
+          "librt",
+          "libpthread",
+          "python3"
+        ]
+      }
+    },
+    "dependencies": {
+      "python3-light": {
+        "name": "python3-light",
+        "version": "3.11.10-1",
+        "filename": "python3-light_3.11.10-1_aarch64-3.10.ipk",
+        "size": 3152039,
+        "installed_size": 8232960,
+        "sha256": "c25be11e656e69a3cd249733357f0aed68d217555aa79e55f52870336e39f32e"
+      },
+      "python3-base": {
+        "name": "python3-base",
+        "version": "3.11.10-1",
+        "filename": "python3-base_3.11.10-1_aarch64-3.10.ipk",
+        "size": 222356,
+        "installed_size": 1054720,
+        "sha256": "48437cf6ec5bb7f7fd9652bf4cd6ad4c59ae00d9c5536aefc9f5e6deada33cee"
+      },
+      "libpython3": {
+        "name": "libpython3",
+        "version": "3.11.10-1",
+        "filename": "libpython3_3.11.10-1_aarch64-3.10.ipk",
+        "size": 2469499,
+        "installed_size": 6481920,
+        "sha256": "c50b69f47fedd0eed47c6d8da68b7770839523dde25190cdf9b54930007717f3"
+      },
+      "zlib": {
+        "name": "zlib",
+        "version": "1.3.1-1",
+        "filename": "zlib_1.3.1-1_aarch64-3.10.ipk",
+        "size": 43322,
+        "installed_size": 92160,
+        "sha256": "4222075a4bb8e9e34b8042c720a4b03dde11b2ccbfa4db715fca4e0e2d87daf9"
+      },
+      "ca-bundle": {
+        "name": "ca-bundle",
+        "version": "20241223-1",
+        "filename": "ca-bundle_20241223-1_all.ipk",
+        "size": 133158,
+        "installed_size": 235520,
+        "sha256": "0a447e17d191e53ed81f45b9d1eafcf788eac75e7e9fe21bc30f00501aa844e7"
+      }
+    },
+    "optional": {
+      "redsocks": {
+        "name": "redsocks",
+        "version": "0.5-2",
+        "filename": "redsocks_0.5-2_aarch64-3.10.ipk",
+        "size": 50203,
+        "installed_size": 112640,
+        "sha256": "3422d02e39fecc692e0d2fdd0204b25f134331b733680223f2c0f46ad1f49bc4",
+        "description": "Transparent SOCKS5/HTTP proxy tunnel",
+        "dependencies": [
+          "libc",
+          "libssp",
+          "librt",
+          "libpthread",
+          "libevent2-core"
+        ]
+      },
+      "libevent2-core": {
+        "name": "libevent2-core",
+        "version": "2.1.12-1",
+        "filename": "libevent2-core_2.1.12-1_aarch64-3.10.ipk",
+        "size": 111223,
+        "installed_size": 262144,
+        "sha256": ""
+      }
+    }
+  },
+  "python_packages": {
+    "websockets": {
+      "name": "websockets",
+      "version": ">=12.0",
+      "description": "WebSocket client and server library"
+    }
+  },
+  "total_size": {
+    "download": "~14 MB",
+    "installed": "~35 MB"
+  },
+  "updated": "2025-02-14"
+}

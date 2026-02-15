@@ -50,7 +50,7 @@ jobs:
           echo "Stripped size: $(du -h target/armv7-unknown-linux-gnueabihf/release/client | cut -f1)"
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: xiaoai-client-armv7
           path: packages/client-rust/target/armv7-unknown-linux-gnueabihf/release/client
@@ -77,7 +77,7 @@ jobs:
           tar -czf xiaoai-client-armv7.tar.gz -C deploy .
 
       - name: Upload deployment package
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: xiaoai-client-deployment
           path: xiaoai-client-armv7.tar.gz
@@ -108,7 +108,7 @@ jobs:
         run: cargo test --release
 
       - name: Upload native binary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: xiaoai-client-${{ matrix.os }}
           path: packages/client-rust/target/release/client

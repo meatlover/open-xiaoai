@@ -1,3 +1,4 @@
+pub mod ai_brain;
 pub mod audio;
 pub mod connect;
 pub mod monitor;

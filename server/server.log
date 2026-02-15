@@ -1,0 +1,8 @@
+2026-02-15 00:38:25,269 INFO Starting AI-Brain WS on 0.0.0.0:9000
+2026-02-15 00:38:25,269 INFO server listening on 0.0.0.0:9000
+2026-02-15 00:38:36,448 INFO connection open
+2026-02-15 00:38:36,448 INFO Client connected: ('127.0.0.1', 56656)
+2026-02-15 00:38:36,468 INFO HTTP Request: POST http://127.0.0.1:1234/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-15 00:38:37,799 INFO HTTP Request: POST http://127.0.0.1:1234/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-15 00:38:38,175 INFO HTTP Request: POST http://127.0.0.1:1234/v1/chat/completions "HTTP/1.1 200 OK"
+2026-02-15 00:38:38,947 INFO connection closed

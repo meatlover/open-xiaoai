@@ -1,7 +1,10 @@
+use open_xiaoai::services::ai_brain::{extract_asr_text, new_session_id, send_user_input};
 use open_xiaoai::services::audio::config::AudioConfig;
 use open_xiaoai::services::monitor::kws::KwsMonitor;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
 
@@ -20,6 +23,7 @@ struct AppClient {
     kws_monitor: KwsMonitor,
     instruction_monitor: InstructionMonitor,
     playing_monitor: PlayingMonitor,
+    session_id: Arc<Mutex<String>>,
 }
 
 impl AppClient {
@@ -28,6 +32,7 @@ impl AppClient {
             kws_monitor: KwsMonitor::new(),
             instruction_monitor: InstructionMonitor::new(),
             playing_monitor: PlayingMonitor::new(),
+            session_id: Arc::new(Mutex::new(new_session_id())),
         }
     }
 
@@ -71,11 +76,27 @@ impl AppClient {
         rpc.add_command("start_recording", start_recording).await;
         rpc.add_command("stop_recording", stop_recording).await;
 
+        let session_id_clone = Arc::clone(&self.session_id);
         self.instruction_monitor
-            .start(|event| async move {
-                MessageManager::instance()
-                    .send_event("instruction", Some(json!(event)))
-                    .await
+            .start(move |event| {
+                let session_id_clone = Arc::clone(&session_id_clone);
+                async move {
+                    // Send original instruction event for backward compatibility
+                    MessageManager::instance()
+                        .send_event("instruction", Some(json!(event)))
+                        .await?;
+                    
+                    // Check if this is an ASR final result and send to AI-Brain
+                    if let Some(text) = extract_asr_text(&json!(event)) {
+                        let session_id = session_id_clone.lock().await.clone();
+                        println!("🔥 ASR final result: {}", text);
+                        if let Err(e) = send_user_input(session_id, text).await {
+                            eprintln!("❌ Failed to send user_input: {}", e);
+                        }
+                    }
+                    
+                    Ok(())
+                }
             })
             .await;
 

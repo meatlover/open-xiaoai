@@ -63,7 +63,7 @@ pub async fn send_user_input(session_id: String, text: String) -> Result<(), App
     let json_str = serde_json::to_string(&msg)?;
     
     MessageManager::instance()
-        .send(Message::Text(json_str))
+        .send(Message::Text(json_str.into()))
         .await
 }
 

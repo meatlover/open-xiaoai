@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.meatlover.xiaoai-brain</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/meatlover/repos/xiaomi-stereo/open-xiaoai/server/.venv/bin/python</string>
+        <string>/Users/meatlover/repos/xiaomi-stereo/open-xiaoai/server/server.py</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>/Users/meatlover/repos/xiaomi-stereo/open-xiaoai/server</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>LLM_BASE_URL</key>
+        <string>http://127.0.0.1:1234</string>
+        <key>LLM_MODEL</key>
+        <string>qwen/qwen3-vl-30b</string>
+        <key>WS_HOST</key>
+        <string>0.0.0.0</string>
+        <key>WS_PORT</key>
+        <string>9000</string>
+        <key>LOG_LEVEL</key>
+        <string>INFO</string>
+        <key>NO_PROXY</key>
+        <string>*</string>
+    </dict>
+    
+    <key>StandardOutPath</key>
+    <string>/Users/meatlover/repos/xiaomi-stereo/open-xiaoai/server/logs/stdout.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/meatlover/repos/xiaomi-stereo/open-xiaoai/server/logs/stderr.log</string>
+    
+    <key>KeepAlive</key>
+    <true/>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>

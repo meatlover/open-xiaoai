@@ -52,6 +52,8 @@ WS_PORT = int(os.getenv("WS_PORT", "9000"))
 HTTP_PORT = int(os.getenv("HTTP_PORT", "9001"))
 SERVER_IP = os.getenv("SERVER_IP", "192.168.31.142")
 
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "10"))
+
 TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 
 # --- LLM Provider configuration ---
@@ -130,6 +132,20 @@ def is_smart_home_command(text: str) -> bool:
     return has_action
 
 
+# --- Session reset phrases (firmware built-in commands) ---
+# "开启新的对话" activates firmware continuous-dialogue mode, which causes
+# both the firmware AI and the brain to respond (double replies).
+# We intercept these, reset the brain session, and cancel continuous mode.
+SESSION_RESET_PHRASES = os.getenv(
+    "SESSION_RESET_PHRASES", "开启新的对话,新的对话,开始新对话,重新开始"
+).split(",")
+
+
+def is_session_reset_command(text: str) -> bool:
+    """Check if the text is a session-reset / new-conversation command."""
+    return any(p in text for p in SESSION_RESET_PHRASES)
+
+
 # Default system prompt (used when provider has no override)
 DEFAULT_SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", (
     "You are a helpful voice assistant running on a Xiaomi smart speaker. "
@@ -166,9 +182,38 @@ MAX_TOOL_ROUNDS = 3
 SENTENCE_ENDINGS = re.compile(r'[.。!！?？\n;；]')
 MIN_SENTENCE_CHARS = 8
 
+
+def strip_markdown(text: str) -> str:
+    """Remove markdown formatting so TTS reads pure natural text."""
+    # Bold/italic: ***text***, **text**, *text*, ___text___, __text__, _text_
+    s = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', text)
+    s = re.sub(r'_{1,3}(.+?)_{1,3}', r'\1', s)
+    # Strikethrough: ~~text~~
+    s = re.sub(r'~~(.+?)~~', r'\1', s)
+    # Inline code: `text`
+    s = re.sub(r'`(.+?)`', r'\1', s)
+    # Headers: # text
+    s = re.sub(r'^#{1,6}\s+', '', s, flags=re.MULTILINE)
+    # Unordered list markers: - item, * item, + item
+    s = re.sub(r'^[\s]*[-*+]\s+', '', s, flags=re.MULTILINE)
+    # Ordered list markers: 1. item
+    s = re.sub(r'^[\s]*\d+\.\s+', '', s, flags=re.MULTILINE)
+    # Links: [text](url) -> text
+    s = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', s)
+    # Images: ![alt](url) -> alt
+    s = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', s)
+    # Blockquotes: > text
+    s = re.sub(r'^>\s+', '', s, flags=re.MULTILINE)
+    # Horizontal rules: ---, ***, ___
+    s = re.sub(r'^[-*_]{3,}\s*$', '', s, flags=re.MULTILINE)
+    return s
+
 # Temp dir for TTS audio files
 TTS_DIR = Path(tempfile.mkdtemp(prefix="xiaoai-tts-"))
 logger.info("TTS audio dir: %s", TTS_DIR)
+
+# Pre-generated "让我想想" audio URL (populated at first connection)
+THINKING_AUDIO_URL: Optional[str] = None
 
 
 # --- LLM helpers ---
@@ -187,11 +232,12 @@ def _provider_url(provider: Dict[str, str]) -> str:
 def _build_system_prompt(provider: Dict[str, str]) -> str:
     base = provider.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
     now = datetime.now()
+    weekday = ['星期一','星期二','星期三','星期四','星期五','星期六','星期日'][now.weekday()]
     date_info = (
-        f"\n\n【当前时间】\n现在是 {now.strftime('%Y年%m月%d日 %H:%M')}，"
-        f"{['星期一','星期二','星期三','星期四','星期五','星期六','星期日'][now.weekday()]}。"
+        f"【当前时间】现在是 {now.strftime('%Y年%m月%d日 %H:%M')}，{weekday}。"
+        f"你必须使用这个日期回答任何关于日期、星期、时间的问题。\n\n"
     )
-    return base + date_info
+    return date_info + base
 
 
 # --- Web search ---
@@ -495,13 +541,16 @@ async def _stream_and_enqueue_tts(
                 sentence = sentence_buffer[:end_pos].strip()
                 sentence_buffer = sentence_buffer[end_pos:]
                 if sentence and len(sentence) >= MIN_SENTENCE_CHARS:
+                    sentence = strip_markdown(sentence)
                     logger.info("TTS sentence: %s", sentence)
                     audio_url = await tts_generate(sentence)
                     if audio_url:
                         await pb_queue.put(audio_url)
                 elif sentence:
-                    # Too short — prepend back for merging with next chunk
+                    # Too short — restore to buffer and wait for more content
+                    # IMPORTANT: Break to avoid infinite loop on short sentences like "1."
                     sentence_buffer = sentence + sentence_buffer
+                    break
 
         if tool_calls_out:
             logger.info("Tool calls requested: %s", [tc["name"] for tc in tool_calls_out])
@@ -534,6 +583,7 @@ async def _stream_and_enqueue_tts(
             sentence_buffer += raw_buffer
         remaining = sentence_buffer.strip()
         if remaining:
+            remaining = strip_markdown(remaining)
             logger.info("TTS final: %s", remaining)
             audio_url = await tts_generate(remaining)
             if audio_url:
@@ -615,7 +665,50 @@ async def handle_connection(websocket) -> None:
                 await send_json(websocket, {"type": "llm_end"})
                 continue
 
+            # Session reset: "开启新的对话" etc.
+            # The firmware enters continuous-dialogue mode which causes double
+            # replies (firmware AI + brain).  We reset the brain session and
+            # cancel continuous mode on the device so only one side responds.
+            if is_session_reset_command(text):
+                logger.info("Session reset command: %s", text)
+                session_messages.clear()
+                log_conversation_turn(
+                    "assistant", "[session reset]",
+                    client=client_addr, provider="filter",
+                )
+                # Cancel firmware continuous-dialogue mode (mic-on then mic-off)
+                try:
+                    cancel_script = (
+                        "ubus call pnshelper event_notify "
+                        "'{\"src\":3, \"event\":7}' && "
+                        "sleep 0.3 && "
+                        "ubus call pnshelper event_notify "
+                        "'{\"src\":3, \"event\":8}'"
+                    )
+                    await run_shell_on_device(
+                        websocket, cancel_script, pending_rpcs, timeout_secs=5,
+                    )
+                    logger.info("Cancelled firmware continuous-dialogue mode")
+                except Exception as exc:
+                    logger.warning("Failed to cancel continuous mode: %s", exc)
+                await send_json(websocket, {"type": "llm_end"})
+                continue
+
             session_messages.append({"role": "user", "content": text})
+
+            # Pre-generate "让我想想" on first use
+            global THINKING_AUDIO_URL
+            if THINKING_AUDIO_URL is None:
+                THINKING_AUDIO_URL = await tts_generate("让我想想")
+
+            # Play "让我想想" (firmware audio already stopped by device client)
+            if THINKING_AUDIO_URL:
+                script = (
+                    f"miplayer -f '{THINKING_AUDIO_URL}'"
+                )
+                asyncio.create_task(
+                    run_shell_on_device(websocket, script, pending_rpcs, timeout_secs=5)
+                )
 
             # Try each provider in precedence order
             response = None
@@ -625,17 +718,42 @@ async def handle_connection(websocket) -> None:
                     messages_for_provider = list(session_messages)
                 else:
                     sys_msg = {"role": "system", "content": _build_system_prompt(provider)}
-                    messages_for_provider = [sys_msg] + session_messages
+                    # Inject current date/time as a concrete context message
+                    # so models that ignore system prompt still get the date
+                    now = datetime.now()
+                    weekday = ['星期一','星期二','星期三','星期四','星期五','星期六','星期日'][now.weekday()]
+                    date_ctx = [
+                        {"role": "user", "content": "现在几点了？今天几号？"},
+                        {"role": "assistant", "content":
+                            f"现在是{now.strftime('%Y年%m月%d日 %H:%M')}，{weekday}。"},
+                    ]
+                    messages_for_provider = [sys_msg] + date_ctx + session_messages
 
                 try:
                     logger.info("Trying provider: %s (%s)", provider["name"], provider["model"])
-                    response = await stream_response_with_tts(
-                        websocket, provider, messages_for_provider,
-                        client_addr, pending_rpcs,
+                    response = await asyncio.wait_for(
+                        stream_response_with_tts(
+                            websocket, provider, messages_for_provider,
+                            client_addr, pending_rpcs,
+                        ),
+                        timeout=LLM_TIMEOUT,
                     )
-                    used_provider = provider
-                    session_messages = messages_for_provider[1:]  # strip system msg
-                    break
+                    if response is not None and response.strip():
+                        used_provider = provider
+                        session_messages = messages_for_provider[1:]  # strip system msg
+                        break
+                    else:
+                        logger.warning(
+                            "Provider '%s' returned empty response — trying next",
+                            provider["name"],
+                        )
+                        continue
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Provider '%s' timed out after %.0fs",
+                        provider["name"], LLM_TIMEOUT,
+                    )
+                    continue
                 except Exception as exc:
                     logger.warning(
                         "Provider '%s' failed: %s — trying next",
@@ -644,9 +762,7 @@ async def handle_connection(websocket) -> None:
                     continue
 
             if response is not None and used_provider is not None:
-                if not response.strip():
-                    logger.info("[%s] Empty response (silent)", used_provider["name"])
-                elif response:
+                if response.strip():
                     session_messages.append({"role": "assistant", "content": response})
                     log_conversation_turn(
                         "assistant", response,
@@ -660,6 +776,14 @@ async def handle_connection(websocket) -> None:
                     )
             else:
                 logger.error("All providers failed for: %s", text)
+                # Play fallback message
+                fallback_url = await tts_generate("大脑宕机了")
+                if fallback_url:
+                    script = f"miplayer -f '{fallback_url}'"
+                    await run_shell_on_device(
+                        websocket, script, pending_rpcs, timeout_secs=10,
+                    )
+                session_messages.pop()  # remove the unanswered user message
                 await send_json(websocket, {"type": "error", "error": "all_providers_failed"})
 
             await send_json(websocket, {"type": "llm_end"})

@@ -88,6 +88,9 @@ impl AppClient {
                     
                     // Check if this is an ASR final result and send to AI-Brain
                     if let Some(text) = extract_asr_text(&json!(event)) {
+                        // Immediately mute firmware response locally (no round-trip)
+                        let _ = open_xiaoai::utils::shell::run_shell("mphelper pause").await;
+
                         let session_id = session_id_clone.lock().await.clone();
                         println!("🔥 ASR final result: {}", text);
                         if let Err(e) = send_user_input(session_id, text).await {

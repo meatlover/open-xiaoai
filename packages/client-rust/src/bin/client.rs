@@ -101,8 +101,9 @@ impl AppClient {
 
                         // Immediately take over audio: play "让我想想" via device TTS
                         // to interrupt firmware's own response (uses same mibrain channel)
+                        // play=1 is required to actually play the audio, not just generate it
                         let _ = open_xiaoai::utils::shell::run_shell(
-                            "ubus call mibrain text_to_speech '{\"text\":\"让我想想\",\"save\":0}'"
+                            "ubus call mibrain text_to_speech '{\"text\":\"让我想想\",\"save\":0,\"play\":1}'"
                         ).await;
 
                         let session_id = session_id_clone.lock().await.clone();

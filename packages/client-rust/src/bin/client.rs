@@ -3,7 +3,7 @@ use open_xiaoai::services::audio::config::AudioConfig;
 use open_xiaoai::services::monitor::kws::KwsMonitor;
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
@@ -77,17 +77,28 @@ impl AppClient {
         rpc.add_command("stop_recording", stop_recording).await;
 
         let session_id_clone = Arc::clone(&self.session_id);
+        let last_asr = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
         self.instruction_monitor
             .start(move |event| {
                 let session_id_clone = Arc::clone(&session_id_clone);
+                let last_asr = Arc::clone(&last_asr);
                 async move {
                     // Send original instruction event for backward compatibility
                     MessageManager::instance()
                         .send_event("instruction", Some(json!(event)))
                         .await?;
-                    
+
                     // Check if this is an ASR final result and send to AI-Brain
                     if let Some(text) = extract_asr_text(&json!(event)) {
+                        // Debounce: skip duplicate ASR finals within 2s
+                        let mut last = last_asr.lock().await;
+                        if last.elapsed() < Duration::from_secs(2) {
+                            println!("⏭️ Skipping duplicate ASR final: {}", text);
+                            return Ok(());
+                        }
+                        *last = Instant::now();
+                        drop(last);
+
                         // Immediately take over audio: play "让我想想" via device TTS
                         // to interrupt firmware's own response (uses same mibrain channel)
                         let _ = open_xiaoai::utils::shell::run_shell(
@@ -100,7 +111,7 @@ impl AppClient {
                             eprintln!("❌ Failed to send user_input: {}", e);
                         }
                     }
-                    
+
                     Ok(())
                 }
             })

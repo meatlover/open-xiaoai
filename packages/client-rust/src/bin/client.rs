@@ -88,8 +88,11 @@ impl AppClient {
                     
                     // Check if this is an ASR final result and send to AI-Brain
                     if let Some(text) = extract_asr_text(&json!(event)) {
-                        // Immediately mute firmware response locally (no round-trip)
-                        let _ = open_xiaoai::utils::shell::run_shell("mphelper pause").await;
+                        // Immediately take over audio: play "让我想想" via device TTS
+                        // to interrupt firmware's own response (uses same mibrain channel)
+                        let _ = open_xiaoai::utils::shell::run_shell(
+                            "ubus call mibrain text_to_speech '{\"text\":\"让我想想\",\"save\":0}'"
+                        ).await;
 
                         let session_id = session_id_clone.lock().await.clone();
                         println!("🔥 ASR final result: {}", text);

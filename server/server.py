@@ -696,8 +696,15 @@ async def handle_connection(websocket) -> None:
 
             session_messages.append({"role": "user", "content": text})
 
-            # "让我想想" is played on-device by the Rust client immediately
-            # when ASR is detected (no round-trip delay needed)
+            # Play "让我想想" (firmware audio already stopped by device client)
+            global THINKING_AUDIO_URL
+            if THINKING_AUDIO_URL is None:
+                THINKING_AUDIO_URL = await tts_generate("让我想想")
+            if THINKING_AUDIO_URL:
+                script = f"miplayer -f '{THINKING_AUDIO_URL}'"
+                asyncio.create_task(
+                    run_shell_on_device(websocket, script, pending_rpcs, timeout_secs=5)
+                )
 
             # Try each provider in precedence order
             response = None

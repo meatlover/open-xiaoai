@@ -99,26 +99,8 @@ impl AppClient {
                         *last = Instant::now();
                         drop(last);
 
-                        // Play "让我想想" via mibrain TTS, then guard against
-                        // firmware NLP/TTS by repeatedly killing mediaplayer.
-                        // Our brain audio uses aplay (direct ALSA), unaffected
-                        // by player_reset.
-                        tokio::spawn(async {
-                            // Phase 1: Play "让我想想" via mediaplayer
-                            let _ = open_xiaoai::utils::shell::run_shell(
-                                "ubus call mibrain text_to_speech '{\"text\":\"让我想想\",\"save\":0,\"play\":1}'"
-                            ).await;
-                            // Phase 2: Wait for "让我想想" audio to finish (~1s)
-                            tokio::time::sleep(Duration::from_millis(1500)).await;
-                            // Phase 3: Kill mediaplayer every 500ms for 5s to
-                            // catch firmware TTS regardless of network latency
-                            for _ in 0..10 {
-                                tokio::time::sleep(Duration::from_millis(500)).await;
-                                let _ = open_xiaoai::utils::shell::run_shell(
-                                    "ubus call mediaplayer player_reset"
-                                ).await;
-                            }
-                        });
+                        // Immediately mute firmware response locally (no round-trip)
+                        let _ = open_xiaoai::utils::shell::run_shell("mphelper pause").await;
 
                         let session_id = session_id_clone.lock().await.clone();
                         println!("🔥 ASR final result: {}", text);

@@ -99,11 +99,14 @@ impl AppClient {
                         *last = Instant::now();
                         drop(last);
 
-                        // Fire-and-forget: play "让我想想" via device TTS without blocking
-                        // so user_input reaches the brain ASAP
+                        // Play "让我想想" immediately, then reset player after a
+                        // short delay to kill the firmware's streaming NLP/TTS
+                        // response which starts ~500ms after ASR final
                         tokio::spawn(async {
                             let _ = open_xiaoai::utils::shell::run_shell(
-                                "ubus call mibrain text_to_speech '{\"text\":\"让我想想\",\"save\":0,\"play\":1}'"
+                                "ubus call mibrain text_to_speech '{\"text\":\"让我想想\",\"save\":0,\"play\":1}' && \
+                                 sleep 1 && \
+                                 ubus call mediaplayer player_reset"
                             ).await;
                         });
 

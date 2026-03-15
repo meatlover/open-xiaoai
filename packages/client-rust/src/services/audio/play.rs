@@ -61,6 +61,7 @@ impl AudioPlayer {
         }
 
         let config = config.unwrap_or_else(|| (*AUDIO_CONFIG).clone());
+        eprintln!("🎵 AudioPlayer::start() config: rate={}, bits={}, ch={}", config.sample_rate, config.bits_per_sample, config.channels);
 
         let mut aplay_thread = Command::new("aplay")
             .args([
@@ -110,6 +111,8 @@ impl AudioPlayer {
         let sender_guard = self.sender.lock().await;
         if let Some(sender) = sender_guard.as_ref() {
             sender.send(bytes).await?;
+        } else {
+            eprintln!("⚠️ AudioPlayer::play() called but no sender (start not called?)");
         }
 
         Ok(())

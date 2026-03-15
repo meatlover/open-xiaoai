@@ -6,10 +6,10 @@ use tokio::task::JoinHandle;
 use crate::base::AppError;
 
 const EV_KEY: u16 = 1;
-const KEY_VOLUMEUP: u16 = 114;
+const KEY_VOLUMEUP: u16 = 139;
 const KEY_VOLUMEDOWN: u16 = 115;
 const KEY_MUTE: u16 = 102;
-const KEY_PLAYPAUSE: u16 = 139;
+const KEY_PLAYPAUSE: u16 = 114;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ButtonEvent {

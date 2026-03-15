@@ -102,23 +102,23 @@ impl AppClient {
                     ButtonEvent::VolumeUp => {
                         let vol = VolumeControl::instance().volume_up().await;
                         println!("🔊 Volume up: {}", vol);
-                        led::show_rgb(0, "0000ff").await;
+                        led::show_rgb("0000ff").await;
                         tokio::time::sleep(Duration::from_millis(200)).await;
-                        led::shut(0).await;
+                        led::shut(8).await;
                     }
                     ButtonEvent::VolumeDown => {
                         let vol = VolumeControl::instance().volume_down().await;
                         println!("🔉 Volume down: {}", vol);
-                        led::show_rgb(0, "0000ff").await;
+                        led::show_rgb("0000ff").await;
                         tokio::time::sleep(Duration::from_millis(200)).await;
-                        led::shut(0).await;
+                        led::shut(8).await;
                     }
                     ButtonEvent::Mute => {
                         let muted = VolumeControl::instance().toggle_mute().await;
                         if muted {
-                            led::show_rgb(0, "ff0000").await;
+                            led::show_rgb("ff0000").await;
                         } else {
-                            led::shut(0).await;
+                            led::shut(8).await;
                         }
                     }
                     ButtonEvent::PlayPause => {

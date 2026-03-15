@@ -17,11 +17,15 @@ use open_xiaoai::services::connect::data::{Event, Request, Response, Stream};
 use open_xiaoai::services::connect::handler::MessageHandler;
 use open_xiaoai::services::connect::message::{MessageManager, WsStream};
 use open_xiaoai::services::connect::rpc::RPC;
+use open_xiaoai::services::led;
+use open_xiaoai::services::monitor::button::{ButtonEvent, ButtonMonitor};
 use open_xiaoai::services::monitor::instruction::InstructionMonitor;
+use open_xiaoai::services::volume::VolumeControl;
 
 struct AppClient {
     kws_monitor: KwsMonitor,
     instruction_monitor: InstructionMonitor,
+    button_monitor: ButtonMonitor,
     session_id: Arc<Mutex<String>>,
 }
 
@@ -30,6 +34,7 @@ impl AppClient {
         Self {
             kws_monitor: KwsMonitor::new(),
             instruction_monitor: InstructionMonitor::new(),
+            button_monitor: ButtonMonitor::new(),
             session_id: Arc::new(Mutex::new(new_session_id())),
         }
     }
@@ -80,6 +85,50 @@ impl AppClient {
             "/etc/init.d/mediaplayer stop"
         ).await;
         println!("🔇 Stopped mediaplayer service");
+
+        // Stop touchpad daemon — we handle buttons directly via /dev/input/event0
+        let _ = open_xiaoai::utils::shell::run_shell(
+            "/etc/init.d/touchpad stop"
+        ).await;
+        println!("🔇 Stopped touchpad daemon");
+
+        // Initialize volume control
+        VolumeControl::instance().init().await;
+
+        // Start button monitor
+        self.button_monitor
+            .start(|event| async move {
+                match event {
+                    ButtonEvent::VolumeUp => {
+                        let vol = VolumeControl::instance().volume_up().await;
+                        println!("🔊 Volume up: {}", vol);
+                        led::show_rgb(0, "0000ff").await;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        led::shut(0).await;
+                    }
+                    ButtonEvent::VolumeDown => {
+                        let vol = VolumeControl::instance().volume_down().await;
+                        println!("🔉 Volume down: {}", vol);
+                        led::show_rgb(0, "0000ff").await;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        led::shut(0).await;
+                    }
+                    ButtonEvent::Mute => {
+                        let muted = VolumeControl::instance().toggle_mute().await;
+                        if muted {
+                            led::show_rgb(0, "ff0000").await;
+                        } else {
+                            led::shut(0).await;
+                        }
+                    }
+                    ButtonEvent::PlayPause => {
+                        println!("⏯️ Play/Pause pressed");
+                        let _ = AudioPlayer::instance().stop().await;
+                    }
+                }
+                Ok(())
+            })
+            .await;
 
         let session_id_clone = Arc::clone(&self.session_id);
         let last_asr = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
@@ -138,6 +187,7 @@ impl AppClient {
         let _ = AudioRecorder::instance().stop_recording().await;
         self.instruction_monitor.stop().await;
         self.kws_monitor.stop().await;
+        self.button_monitor.stop().await;
     }
 }
 

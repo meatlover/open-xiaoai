@@ -199,8 +199,13 @@ async fn on_event(event: Event) -> Result<(), AppError> {
 
 async fn on_stream(stream: Stream) -> Result<(), AppError> {
     let Stream { tag, bytes, .. } = stream;
-    eprintln!("📦 Stream received: tag={}, bytes={}", tag, bytes.len());
+    eprintln!("📦 Stream received: tag={}, bytes={}, first16={:?}", tag, bytes.len(), &bytes[..bytes.len().min(16)]);
     if tag.as_str() == "play" {
+        // Debug: save raw PCM to file for manual testing
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/debug_audio.pcm") {
+            let _ = f.write_all(&bytes);
+        }
         let _ = AudioPlayer::instance().play(bytes).await;
     }
     Ok(())

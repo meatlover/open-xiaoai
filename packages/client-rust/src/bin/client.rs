@@ -1,5 +1,6 @@
 use open_xiaoai::services::ai_brain::{extract_asr_text, new_session_id, send_user_input};
 use open_xiaoai::services::audio::config::AudioConfig;
+use open_xiaoai::services::monitor::file::FileMonitorEvent;
 use open_xiaoai::services::monitor::kws::KwsMonitor;
 use serde_json::json;
 use std::sync::Arc;
@@ -17,12 +18,10 @@ use open_xiaoai::services::connect::handler::MessageHandler;
 use open_xiaoai::services::connect::message::{MessageManager, WsStream};
 use open_xiaoai::services::connect::rpc::RPC;
 use open_xiaoai::services::monitor::instruction::InstructionMonitor;
-use open_xiaoai::services::monitor::playing::PlayingMonitor;
 
 struct AppClient {
     kws_monitor: KwsMonitor,
     instruction_monitor: InstructionMonitor,
-    playing_monitor: PlayingMonitor,
     session_id: Arc<Mutex<String>>,
 }
 
@@ -31,7 +30,6 @@ impl AppClient {
         Self {
             kws_monitor: KwsMonitor::new(),
             instruction_monitor: InstructionMonitor::new(),
-            playing_monitor: PlayingMonitor::new(),
             session_id: Arc::new(Mutex::new(new_session_id())),
         }
     }
@@ -76,6 +74,13 @@ impl AppClient {
         rpc.add_command("start_recording", start_recording).await;
         rpc.add_command("stop_recording", stop_recording).await;
 
+        // Stop mediaplayer service — brain audio uses aplay via WebSocket streaming,
+        // so mediaplayer is not needed. Stopping via init.d tells procd not to respawn.
+        let _ = open_xiaoai::utils::shell::run_shell(
+            "/etc/init.d/mediaplayer stop"
+        ).await;
+        println!("🔇 Stopped mediaplayer service");
+
         let session_id_clone = Arc::clone(&self.session_id);
         let last_asr = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
         self.instruction_monitor
@@ -83,6 +88,13 @@ impl AppClient {
                 let session_id_clone = Arc::clone(&session_id_clone);
                 let last_asr = Arc::clone(&last_asr);
                 async move {
+                    // Log firmware TTS attempts for debugging
+                    if let FileMonitorEvent::NewLine(ref line) = event {
+                        if line.contains("\"namespace\":\"SpeechSynthesizer\"") {
+                            eprintln!("📡 Firmware TTS: {}", line);
+                        }
+                    }
+
                     // Send original instruction event for backward compatibility
                     MessageManager::instance()
                         .send_event("instruction", Some(json!(event)))
@@ -99,9 +111,6 @@ impl AppClient {
                         *last = Instant::now();
                         drop(last);
 
-                        // Immediately mute firmware response locally (no round-trip)
-                        let _ = open_xiaoai::utils::shell::run_shell("mphelper pause").await;
-
                         let session_id = session_id_clone.lock().await.clone();
                         println!("🔥 ASR final result: {}", text);
                         if let Err(e) = send_user_input(session_id, text).await {
@@ -111,14 +120,6 @@ impl AppClient {
 
                     Ok(())
                 }
-            })
-            .await;
-
-        self.playing_monitor
-            .start(|event| async move {
-                MessageManager::instance()
-                    .send_event("playing", Some(json!(event)))
-                    .await
             })
             .await;
 
@@ -136,7 +137,6 @@ impl AppClient {
         let _ = AudioPlayer::instance().stop().await;
         let _ = AudioRecorder::instance().stop_recording().await;
         self.instruction_monitor.stop().await;
-        self.playing_monitor.stop().await;
         self.kws_monitor.stop().await;
     }
 }

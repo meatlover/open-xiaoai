@@ -12,7 +12,6 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 import edge_tts
 import httpx
 import websockets
-from aiohttp import web
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -49,12 +48,12 @@ def log_conversation_turn(
 
 WS_HOST = os.getenv("WS_HOST", "0.0.0.0")
 WS_PORT = int(os.getenv("WS_PORT", "9000"))
-HTTP_PORT = int(os.getenv("HTTP_PORT", "9001"))
-SERVER_IP = os.getenv("SERVER_IP", "192.168.31.142")
 
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "10"))
 
 TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
+
+CONTINUOUS_MODE = os.getenv("CONTINUOUS_MODE", "false").lower() == "true"
 
 # --- LLM Provider configuration ---
 # Each provider: name, base_url, api_key, model, system_prompt (optional override)
@@ -208,12 +207,15 @@ def strip_markdown(text: str) -> str:
     s = re.sub(r'^[-*_]{3,}\s*$', '', s, flags=re.MULTILINE)
     return s
 
-# Temp dir for TTS audio files
+# Temp dir for TTS audio files (used temporarily during MP3→PCM conversion)
 TTS_DIR = Path(tempfile.mkdtemp(prefix="xiaoai-tts-"))
-logger.info("TTS audio dir: %s", TTS_DIR)
+logger.info("TTS temp dir: %s", TTS_DIR)
 
-# Pre-generated "让我想想" audio URL (populated at first connection)
-THINKING_AUDIO_URL: Optional[str] = None
+# Pre-generated "让我想想" PCM audio (populated at first use)
+THINKING_PCM: Optional[bytes] = None
+
+# Audio streaming chunk size: ~128ms at 16kHz 16-bit mono
+AUDIO_CHUNK_SIZE = 4096
 
 
 # --- LLM helpers ---
@@ -364,17 +366,17 @@ async def stream_chat_completion(
             tool_calls_out.append(accumulated_tool_calls[idx])
 
 
-# --- WebSocket / TTS ---
+# --- WebSocket / RPC / Audio streaming ---
 
 async def send_json(websocket, payload: Dict[str, Any]) -> None:
     await websocket.send(json.dumps(payload, ensure_ascii=True))
 
 
-async def run_shell_on_device(
-    websocket, script: str, pending_rpcs: Dict[str, asyncio.Future],
-    timeout_secs: float = 120,
+async def rpc_call(
+    websocket, command: str, payload, pending_rpcs: Dict[str, asyncio.Future],
+    timeout_secs: float = 10,
 ) -> Dict[str, Any]:
-    """Send an RPC request and await the device response."""
+    """Send a generic RPC request and await the device response."""
     request_id = str(uuid.uuid4())
     future: asyncio.Future[Dict[str, Any]] = asyncio.get_running_loop().create_future()
     pending_rpcs[request_id] = future
@@ -382,81 +384,81 @@ async def run_shell_on_device(
     request = {
         "Request": {
             "id": request_id,
-            "command": "run_shell",
-            "payload": script,
+            "command": command,
+            "payload": payload,
         }
     }
     await websocket.send(json.dumps(request))
-    logger.info("RPC run_shell: %s", script[:120])
+    logger.info("RPC %s: %s", command, str(payload)[:120] if payload else "(none)")
 
     try:
         return await asyncio.wait_for(future, timeout=timeout_secs)
     except asyncio.TimeoutError:
-        logger.warning("RPC timeout after %ss: %s", timeout_secs, script[:120])
+        logger.warning("RPC timeout after %ss: %s", timeout_secs, command)
         return {"error": "timeout"}
     finally:
         pending_rpcs.pop(request_id, None)
 
 
-async def tts_generate(text: str) -> Optional[str]:
-    """Generate TTS audio via edge-tts, return the audio URL or None on error."""
-    filename = f"{uuid.uuid4().hex}.mp3"
-    filepath = TTS_DIR / filename
+async def run_shell_on_device(
+    websocket, script: str, pending_rpcs: Dict[str, asyncio.Future],
+    timeout_secs: float = 120,
+) -> Dict[str, Any]:
+    """Send a shell RPC request and await the device response."""
+    return await rpc_call(websocket, "run_shell", script, pending_rpcs, timeout_secs)
 
+
+async def send_audio_stream(websocket, pcm_bytes: bytes) -> None:
+    """Send raw PCM audio to device via WebSocket as Stream messages."""
+    for i in range(0, len(pcm_bytes), AUDIO_CHUNK_SIZE):
+        chunk = pcm_bytes[i:i + AUDIO_CHUNK_SIZE]
+        stream = json.dumps({
+            "id": str(uuid.uuid4()),
+            "tag": "play",
+            "bytes": list(chunk),
+        })
+        await websocket.send(stream)
+
+
+async def tts_generate(text: str) -> Optional[bytes]:
+    """Generate TTS audio, return raw PCM bytes (S16LE, 16kHz, mono)."""
+    mp3_path = TTS_DIR / f"{uuid.uuid4().hex}.mp3"
     try:
         communicate = edge_tts.Communicate(text, TTS_VOICE)
-        await communicate.save(str(filepath))
+        await communicate.save(str(mp3_path))
+        # Convert MP3 → raw PCM
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-i", str(mp3_path),
+            "-f", "s16le", "-ar", "16000", "-ac", "1", "-",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        return stdout if proc.returncode == 0 else None
     except Exception as exc:
-        logger.error("edge-tts failed: %s", exc)
+        logger.error("TTS failed: %s", exc)
         return None
-
-    # Clean up old files (keep last 20)
-    try:
-        files = sorted(TTS_DIR.glob("*.mp3"), key=lambda f: f.stat().st_mtime)
-        for old_file in files[:-20]:
-            old_file.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-    return f"http://{SERVER_IP}:{HTTP_PORT}/audio/{filename}"
+    finally:
+        mp3_path.unlink(missing_ok=True)
 
 
 async def playback_worker(
     websocket, queue: asyncio.Queue, pending_rpcs: Dict[str, asyncio.Future],
 ) -> None:
-    """Consume audio URLs from the queue and play them sequentially on the device."""
-    while True:
-        audio_url = await queue.get()
-        if audio_url is None:  # sentinel: no more items
+    """Stream PCM audio to device via WebSocket."""
+    # Start AudioPlayer on device
+    await rpc_call(websocket, "start_play", None, pending_rpcs)
+    try:
+        while True:
+            pcm_bytes = await queue.get()
+            if pcm_bytes is None:  # sentinel: no more items
+                queue.task_done()
+                break
+            await send_audio_stream(websocket, pcm_bytes)
             queue.task_done()
-            break
-        try:
-            script = f"miplayer -f '{audio_url}'"
-            resp = await run_shell_on_device(websocket, script, pending_rpcs)
-            logger.debug("miplayer finished: %s", resp)
-        except Exception as exc:
-            logger.error("Playback failed: %s", exc)
-        queue.task_done()
-
-
-# --- HTTP file server for TTS audio ---
-
-async def handle_audio_request(request: web.Request) -> web.Response:
-    filename = request.match_info["filename"]
-    filepath = TTS_DIR / filename
-    if not filepath.exists():
-        return web.Response(status=404, text="Not found")
-    return web.FileResponse(filepath, headers={"Content-Type": "audio/mpeg"})
-
-
-async def start_http_server() -> None:
-    app = web.Application()
-    app.router.add_get("/audio/{filename}", handle_audio_request)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
-    await site.start()
-    logger.info("HTTP audio server on 0.0.0.0:%s", HTTP_PORT)
+    finally:
+        # Stop AudioPlayer
+        await rpc_call(websocket, "stop_play", None, pending_rpcs)
 
 
 # --- Core conversation handler ---
@@ -473,8 +475,8 @@ async def stream_response_with_tts(
     """
     use_tools = TOOLS if BRAVE_API_KEY else None
 
-    # Playback queue: TTS generation pushes URLs, worker plays sequentially
-    pb_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+    # Playback queue: TTS generation pushes PCM bytes, worker streams to device
+    pb_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
     worker = asyncio.create_task(playback_worker(websocket, pb_queue, pending_rpcs))
 
     try:
@@ -494,7 +496,7 @@ async def _stream_and_enqueue_tts(
     client_addr: str, use_tools: Optional[list],
     pb_queue: asyncio.Queue,
 ) -> Optional[str]:
-    """Inner streaming loop: generates TTS and enqueues audio URLs for playback."""
+    """Inner streaming loop: generates TTS and enqueues PCM bytes for playback."""
     for _round in range(MAX_TOOL_ROUNDS):
         assistant_text: List[str] = []
         sentence_buffer = ""
@@ -543,9 +545,9 @@ async def _stream_and_enqueue_tts(
                 if sentence and len(sentence) >= MIN_SENTENCE_CHARS:
                     sentence = strip_markdown(sentence)
                     logger.info("TTS sentence: %s", sentence)
-                    audio_url = await tts_generate(sentence)
-                    if audio_url:
-                        await pb_queue.put(audio_url)
+                    pcm = await tts_generate(sentence)
+                    if pcm:
+                        await pb_queue.put(pcm)
                 elif sentence:
                     # Too short — restore to buffer and wait for more content
                     # IMPORTANT: Break to avoid infinite loop on short sentences like "1."
@@ -585,9 +587,9 @@ async def _stream_and_enqueue_tts(
         if remaining:
             remaining = strip_markdown(remaining)
             logger.info("TTS final: %s", remaining)
-            audio_url = await tts_generate(remaining)
-            if audio_url:
-                await pb_queue.put(audio_url)
+            pcm = await tts_generate(remaining)
+            if pcm:
+                await pb_queue.put(pcm)
 
         full_response = "".join(assistant_text)
         return full_response
@@ -666,9 +668,6 @@ async def handle_connection(websocket) -> None:
                 continue
 
             # Session reset: "开启新的对话" etc.
-            # The firmware enters continuous-dialogue mode which causes double
-            # replies (firmware AI + brain).  We reset the brain session and
-            # cancel continuous mode on the device so only one side responds.
             if is_session_reset_command(text):
                 logger.info("Session reset command: %s", text)
                 session_messages.clear()
@@ -676,35 +675,35 @@ async def handle_connection(websocket) -> None:
                     "assistant", "[session reset]",
                     client=client_addr, provider="filter",
                 )
-                # Cancel firmware continuous-dialogue mode (mic-on then mic-off)
-                try:
-                    cancel_script = (
-                        "ubus call pnshelper event_notify "
-                        "'{\"src\":3, \"event\":7}' && "
-                        "sleep 0.3 && "
-                        "ubus call pnshelper event_notify "
-                        "'{\"src\":3, \"event\":8}'"
-                    )
-                    await run_shell_on_device(
-                        websocket, cancel_script, pending_rpcs, timeout_secs=5,
-                    )
-                    logger.info("Cancelled firmware continuous-dialogue mode")
-                except Exception as exc:
-                    logger.warning("Failed to cancel continuous mode: %s", exc)
+                if not CONTINUOUS_MODE:
+                    # Cancel firmware continuous-dialogue mode (mic-on then mic-off)
+                    try:
+                        cancel_script = (
+                            "ubus call pnshelper event_notify "
+                            "'{\"src\":3, \"event\":7}' && "
+                            "sleep 0.3 && "
+                            "ubus call pnshelper event_notify "
+                            "'{\"src\":3, \"event\":8}'"
+                        )
+                        await run_shell_on_device(
+                            websocket, cancel_script, pending_rpcs, timeout_secs=5,
+                        )
+                        logger.info("Cancelled firmware continuous-dialogue mode")
+                    except Exception as exc:
+                        logger.warning("Failed to cancel continuous mode: %s", exc)
                 await send_json(websocket, {"type": "llm_end"})
                 continue
 
             session_messages.append({"role": "user", "content": text})
 
-            # Play "让我想想" (firmware audio already stopped by device client)
-            global THINKING_AUDIO_URL
-            if THINKING_AUDIO_URL is None:
-                THINKING_AUDIO_URL = await tts_generate("让我想想")
-            if THINKING_AUDIO_URL:
-                script = f"miplayer -f '{THINKING_AUDIO_URL}'"
-                asyncio.create_task(
-                    run_shell_on_device(websocket, script, pending_rpcs, timeout_secs=5)
-                )
+            # Play "让我想想" via audio stream
+            global THINKING_PCM
+            if THINKING_PCM is None:
+                THINKING_PCM = await tts_generate("让我想想")
+            if THINKING_PCM:
+                await rpc_call(websocket, "start_play", None, pending_rpcs)
+                await send_audio_stream(websocket, THINKING_PCM)
+                await rpc_call(websocket, "stop_play", None, pending_rpcs)
 
             # Try each provider in precedence order
             response = None
@@ -772,13 +771,12 @@ async def handle_connection(websocket) -> None:
                     )
             else:
                 logger.error("All providers failed for: %s", text)
-                # Play fallback message
-                fallback_url = await tts_generate("大脑宕机了")
-                if fallback_url:
-                    script = f"miplayer -f '{fallback_url}'"
-                    await run_shell_on_device(
-                        websocket, script, pending_rpcs, timeout_secs=10,
-                    )
+                # Play fallback message via audio stream
+                fallback_pcm = await tts_generate("大脑宕机了")
+                if fallback_pcm:
+                    await rpc_call(websocket, "start_play", None, pending_rpcs)
+                    await send_audio_stream(websocket, fallback_pcm)
+                    await rpc_call(websocket, "stop_play", None, pending_rpcs)
                 session_messages.pop()  # remove the unanswered user message
                 await send_json(websocket, {"type": "error", "error": "all_providers_failed"})
 
@@ -796,7 +794,6 @@ async def handle_connection(websocket) -> None:
 
 
 async def main() -> None:
-    await start_http_server()
     logger.info("Starting AI-Brain WS on %s:%s", WS_HOST, WS_PORT)
     async with websockets.serve(handle_connection, WS_HOST, WS_PORT):
         await asyncio.Future()

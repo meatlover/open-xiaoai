@@ -41,6 +41,17 @@ yarn-error.log*
 __pycache__
 *.egg-info
 
+# Server logs
+server/logs/
+
+# Orchestrator
+orchestrator/
+
+# Auto-generated summaries
+BUILD_SUCCESS.md
+DEPLOYMENT_SUCCESS.md
+PHASE1_SUMMARY.md
+
 # Misc
 .DS_Store
 *.pem

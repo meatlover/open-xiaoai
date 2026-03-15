@@ -2,15 +2,42 @@
 
 ## Quick Reference
 
-### Start the server
+### Service Management (Recommended - macOS LaunchAgent)
+
+The service is installed as `com.meatlover.xiaoai-brain` and runs automatically at login.
+
+```bash
+# Check service status
+launchctl list | grep meatlover
+
+# Start service
+launchctl load ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+
+# Stop service
+launchctl unload ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+
+# Restart service
+launchctl unload ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+launchctl load ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+
+# View logs
+tail -f /Users/meatlover/repos/xiaomi-stereo/open-xiaoai/server/logs/stderr.log
+```
+
+**Service features:**
+- Auto-starts at login
+- Auto-restarts on crash (KeepAlive=true)
+- Logs to `logs/stdout.log` and `logs/stderr.log`
+
+### Manual Start (Development)
 ```bash
 source .venv/bin/activate
 export LLM_BASE_URL="http://127.0.0.1:1234"
-export LLM_MODEL="local-model"
+export LLM_MODEL="qwen/qwen3-vl-30b"
 python server.py
 ```
 
-### Stop the server
+### Stop the server (Manual)
 ```bash
 # Find process ID
 ps aux | grep "python server.py"
@@ -27,8 +54,8 @@ kill -9 <PID>
 # Check if port 9000 is listening
 lsof -i :9000
 
-# Or on Linux
-netstat -tuln | grep 9000
+# Or check service status
+launchctl list | grep xiaoai-brain
 ```
 
 ---
@@ -122,18 +149,38 @@ curl http://127.0.0.1:1234/v1/models
 
 | Issue | Symptom | Solution |
 |-------|---------|----------|
-| **Port already in use** | `Address already in use` error | Kill existing process: `lsof -i :9000` then `kill <PID>` |
+| **Port already in use** | `Address already in use` error | If using launchctl: `launchctl unload ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist && launchctl load ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist` |
+| **Service won't start** | Exit status 1 in `launchctl list` | Check logs: `tail -30 logs/stderr.log` |
 | **LM Studio not running** | `LLM streaming error: Connection refused` | Start LM Studio and enable local server |
-| **Wrong model name** | `LLM streaming error: Model not found` | Check available models: `curl http://127.0.0.1:1234/v1/models` |
-| **Firewall blocking** | Clients can't connect from LAN | Open port 9000 in firewall, check `WS_HOST=0.0.0.0` |
-| **Module not found** | Import errors on startup | Reinstall dependencies: `pip install -r requirements.txt` |
-| **High memory usage** | Server becomes slow | Each connection keeps full conversation history; restart server periodically |
+| **Wrong model name** | `LLM streaming error: Model not found` | Check available models: `curl --noproxy "*" http://127.0.0.1:1234/v1/models` |
+| **Firewall blocking** | Clients can't connect from LAN | Open port 9000 in firewall, check `WS_HOST=0.0.0.0` in plist |
+| **Module not found** | Import errors on startup | Reinstall dependencies: `pip install -r requirements.txt`, then restart service |
+| **High memory usage** | Server becomes slow | Each connection keeps full conversation history; restart service periodically |
 
 ---
 
 ### 6. Production Deployment
 
-For long-term deployment, consider:
+#### macOS LaunchAgent (Installed)
+
+The service is already installed as a user-level LaunchAgent:
+- **Location**: `~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist`
+- **Auto-start**: Yes (at login)
+- **Auto-restart**: Yes (on crash)
+- **Logs**: `logs/stdout.log` and `logs/stderr.log`
+
+**Configuration** (edit plist and reload to change):
+```bash
+nano ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+launchctl unload ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+launchctl load ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+```
+
+**Uninstall service:**
+```bash
+launchctl unload ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+rm ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+```
 
 #### Using systemd (Linux)
 Create `/etc/systemd/system/ai-brain.service`:
@@ -164,10 +211,11 @@ sudo systemctl start ai-brain
 sudo systemctl status ai-brain
 ```
 
-#### Using screen/tmux (simple)
+#### Using screen/tmux (Development/Testing)
 ```bash
 screen -S ai-brain
 source .venv/bin/activate
+export LLM_MODEL="qwen/qwen3-vl-30b"
 python server.py
 # Press Ctrl+A, then D to detach
 
@@ -200,7 +248,10 @@ screen -r ai-brain
 git pull  # If using git
 source .venv/bin/activate
 pip install -r requirements.txt
-# Restart server
+
+# Restart service
+launchctl unload ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
+launchctl load ~/Library/LaunchAgents/com.meatlover.xiaoai-brain.plist
 ```
 
 #### Backup session state
@@ -231,10 +282,10 @@ lsof -i :9000 | wc -l
 
 ## Quick Troubleshooting Checklist
 
-1. ✅ Is LM Studio running? `curl http://127.0.0.1:1234/v1/models`
-2. ✅ Is server running? `lsof -i :9000`
-3. ✅ Are logs showing errors? Check stdout/log file
-4. ✅ Can you connect locally? `websocat ws://localhost:9000`
-5. ✅ Is firewall blocking? Check port 9000 rules
-6. ✅ Is `WS_HOST` set to `0.0.0.0`? Check env vars
+1. ✅ Is service running? `launchctl list | grep xiaoai-brain`
+2. ✅ Is LM Studio running? `curl --noproxy "*" http://127.0.0.1:1234/v1/models`
+3. ✅ Is port 9000 listening? `lsof -i :9000`
+4. ✅ Are logs showing errors? `tail -30 logs/stderr.log`
+5. ✅ Can you connect locally? Run `test_client.py`
+6. ✅ Is firewall blocking? Check macOS Firewall settings
 7. ✅ Are dependencies installed? `pip list | grep websockets`

@@ -34,22 +34,30 @@ impl AudioPlayer {
 
     pub async fn stop(&self) -> Result<(), AppError> {
         eprintln!("🛑 AudioPlayer::stop() called");
-        let mut sender_guard = self.sender.lock().await;
-        if let Some(sender) = sender_guard.take() {
+
+        // 1. Stop accepting new chunks
+        if let Some(sender) = self.sender.lock().await.take() {
             drop(sender);
         }
 
+        // 2. Wait for writer task to flush remaining chunks
         if let Some(task) = self.player_task.lock().await.take() {
-            task.abort();
+            let _ = task.await;
         }
 
-        if let Some(mut write_thread) = self.write_thread.lock().await.take() {
-            let _ = write_thread.shutdown().await;
-            drop(write_thread);
+        // 3. Close stdin so aplay sees EOF and plays remaining buffer
+        if let Some(mut stdin) = self.write_thread.lock().await.take() {
+            let _ = stdin.shutdown().await;
+            drop(stdin);
         }
 
-        if let Some(mut aplay_thread) = self.aplay_thread.lock().await.take() {
-            let _ = aplay_thread.kill().await;
+        // 4. Wait for aplay to finish (with timeout), don't kill it
+        if let Some(mut child) = self.aplay_thread.lock().await.take() {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                child.wait(),
+            ).await;
+            let _ = child.kill().await; // kill only if timeout
         }
 
         Ok(())

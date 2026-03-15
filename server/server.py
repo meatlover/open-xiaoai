@@ -416,7 +416,7 @@ async def send_audio_stream(websocket, pcm_bytes: bytes) -> None:
             "id": str(uuid.uuid4()),
             "tag": "play",
             "bytes": list(chunk),
-        })
+        }).encode()
         await websocket.send(stream)
 
 
@@ -428,7 +428,7 @@ async def tts_generate(text: str) -> Optional[bytes]:
         await communicate.save(str(mp3_path))
         # Convert MP3 → raw PCM
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-i", str(mp3_path),
+            "/opt/homebrew/bin/ffmpeg", "-i", str(mp3_path),
             "-f", "s16le", "-ar", "16000", "-ac", "1", "-",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,

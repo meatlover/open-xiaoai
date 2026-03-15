@@ -147,6 +147,7 @@ async fn get_version(_: Request) -> Result<Response, AppError> {
 }
 
 async fn start_play(request: Request) -> Result<Response, AppError> {
+    eprintln!("🔊 start_play RPC received");
     let config = request
         .payload
         .and_then(|payload| serde_json::from_value::<AudioConfig>(payload).ok());
@@ -155,6 +156,7 @@ async fn start_play(request: Request) -> Result<Response, AppError> {
 }
 
 async fn stop_play(_: Request) -> Result<Response, AppError> {
+    eprintln!("🔇 stop_play RPC received");
     AudioPlayer::instance().stop().await?;
     Ok(Response::success())
 }
@@ -197,8 +199,8 @@ async fn on_event(event: Event) -> Result<(), AppError> {
 
 async fn on_stream(stream: Stream) -> Result<(), AppError> {
     let Stream { tag, bytes, .. } = stream;
+    eprintln!("📦 Stream received: tag={}, bytes={}", tag, bytes.len());
     if tag.as_str() == "play" {
-        // 播放接收到的音频流
         let _ = AudioPlayer::instance().play(bytes).await;
     }
     Ok(())

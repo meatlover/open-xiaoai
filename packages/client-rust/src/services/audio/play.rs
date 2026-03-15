@@ -33,6 +33,7 @@ impl AudioPlayer {
     }
 
     pub async fn stop(&self) -> Result<(), AppError> {
+        eprintln!("🛑 AudioPlayer::stop() called");
         let mut sender_guard = self.sender.lock().await;
         if let Some(sender) = sender_guard.take() {
             drop(sender);
@@ -65,7 +66,6 @@ impl AudioPlayer {
 
         let mut aplay_thread = Command::new("aplay")
             .args([
-                "--quiet",
                 "-t",
                 "raw",
                 "-f",
@@ -74,14 +74,23 @@ impl AudioPlayer {
                 &config.sample_rate.to_string(),
                 "-c",
                 &config.channels.to_string(),
-                "--buffer-size",
-                &config.buffer_size.to_string(),
-                "--period-size",
-                &config.period_size.to_string(),
                 "-",
             ])
             .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()?;
+
+        // Capture aplay stderr for debugging
+        if let Some(stderr) = aplay_thread.stderr.take() {
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let reader = tokio::io::BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    eprintln!("🔈 aplay: {}", line);
+                }
+            });
+        }
 
         let stdin = aplay_thread.stdin.take().unwrap();
         self.aplay_thread.lock().await.replace(aplay_thread);
@@ -94,7 +103,10 @@ impl AudioPlayer {
             while let Some(bytes) = rx.recv().await {
                 let mut write_guard = write_thread_clone.lock().await;
                 if let Some(write_thread) = write_guard.as_mut() {
-                    let _ = write_thread.write_all(&bytes).await;
+                    if let Err(e) = write_thread.write_all(&bytes).await {
+                        eprintln!("⚠️ aplay write error: {}", e);
+                        break;
+                    }
                 } else {
                     break;
                 }

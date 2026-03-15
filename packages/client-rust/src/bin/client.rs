@@ -147,7 +147,6 @@ async fn get_version(_: Request) -> Result<Response, AppError> {
 }
 
 async fn start_play(request: Request) -> Result<Response, AppError> {
-    eprintln!("🔊 start_play RPC received");
     let config = request
         .payload
         .and_then(|payload| serde_json::from_value::<AudioConfig>(payload).ok());
@@ -156,7 +155,6 @@ async fn start_play(request: Request) -> Result<Response, AppError> {
 }
 
 async fn stop_play(_: Request) -> Result<Response, AppError> {
-    eprintln!("🔇 stop_play RPC received");
     AudioPlayer::instance().stop().await?;
     Ok(Response::success())
 }
@@ -199,13 +197,7 @@ async fn on_event(event: Event) -> Result<(), AppError> {
 
 async fn on_stream(stream: Stream) -> Result<(), AppError> {
     let Stream { tag, bytes, .. } = stream;
-    eprintln!("📦 Stream received: tag={}, bytes={}, first16={:?}", tag, bytes.len(), &bytes[..bytes.len().min(16)]);
     if tag.as_str() == "play" {
-        // Debug: save raw PCM to file for manual testing
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/debug_audio.pcm") {
-            let _ = f.write_all(&bytes);
-        }
         let _ = AudioPlayer::instance().play(bytes).await;
     }
     Ok(())

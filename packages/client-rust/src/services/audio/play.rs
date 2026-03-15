@@ -33,8 +33,6 @@ impl AudioPlayer {
     }
 
     pub async fn stop(&self) -> Result<(), AppError> {
-        eprintln!("🛑 AudioPlayer::stop() called");
-
         // 1. Stop accepting new chunks
         if let Some(sender) = self.sender.lock().await.take() {
             drop(sender);
@@ -70,7 +68,6 @@ impl AudioPlayer {
         }
 
         let config = config.unwrap_or_else(|| (*AUDIO_CONFIG).clone());
-        eprintln!("🎵 AudioPlayer::start() config: rate={}, bits={}, ch={}", config.sample_rate, config.bits_per_sample, config.channels);
 
         let mut aplay_thread = Command::new("aplay")
             .args([
@@ -85,20 +82,7 @@ impl AudioPlayer {
                 "-",
             ])
             .stdin(Stdio::piped())
-            .stderr(Stdio::piped())
             .spawn()?;
-
-        // Capture aplay stderr for debugging
-        if let Some(stderr) = aplay_thread.stderr.take() {
-            tokio::spawn(async move {
-                use tokio::io::AsyncBufReadExt;
-                let reader = tokio::io::BufReader::new(stderr);
-                let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    eprintln!("🔈 aplay: {}", line);
-                }
-            });
-        }
 
         let stdin = aplay_thread.stdin.take().unwrap();
         self.aplay_thread.lock().await.replace(aplay_thread);
@@ -111,8 +95,7 @@ impl AudioPlayer {
             while let Some(bytes) = rx.recv().await {
                 let mut write_guard = write_thread_clone.lock().await;
                 if let Some(write_thread) = write_guard.as_mut() {
-                    if let Err(e) = write_thread.write_all(&bytes).await {
-                        eprintln!("⚠️ aplay write error: {}", e);
+                    if write_thread.write_all(&bytes).await.is_err() {
                         break;
                     }
                 } else {
@@ -131,8 +114,6 @@ impl AudioPlayer {
         let sender_guard = self.sender.lock().await;
         if let Some(sender) = sender_guard.as_ref() {
             sender.send(bytes).await?;
-        } else {
-            eprintln!("⚠️ AudioPlayer::play() called but no sender (start not called?)");
         }
 
         Ok(())

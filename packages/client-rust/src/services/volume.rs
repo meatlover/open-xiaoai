@@ -91,9 +91,7 @@ impl VolumeControl {
             drop(muted);
             *self.volume.lock().await = saved;
             self.set_volume(saved).await;
-            let _ = run_shell(
-                "ubus -t1 -S call pnshelper event_notify '{\"src\":3, \"event\":7}'"
-            ).await;
+            let _ = run_shell("/etc/init.d/pns mic_on").await;
             println!("🔊 Unmuted, restored volume: {}, mic on", saved);
             false
         } else {
@@ -102,9 +100,7 @@ impl VolumeControl {
             *muted = Some(vol);
             drop(muted);
             self.set_volume(0).await;
-            let _ = run_shell(
-                "ubus -t1 -S call pnshelper event_notify '{\"src\":3, \"event\":8}'"
-            ).await;
+            let _ = run_shell("/etc/init.d/pns mic_off").await;
             println!("🔇 Muted, saved volume: {}, mic off", vol);
             true
         }

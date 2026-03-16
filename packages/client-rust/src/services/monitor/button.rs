@@ -1,5 +1,7 @@
 use std::future::Future;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -15,6 +17,8 @@ const KEY_PLAYPAUSE: u16 = 114;
 pub enum ButtonEvent {
     VolumeUp,
     VolumeDown,
+    /// First repeat event while holding volume down — means long-hold
+    VolumeDownLong,
     Mute,
     PlayPause,
 }
@@ -51,6 +55,9 @@ impl ButtonMonitor {
                 }
             };
 
+            // Track whether we already emitted VolumeDownLong for this hold
+            let vol_down_long_fired = Arc::new(AtomicBool::new(false));
+
             // ARM32 input_event: 8B timeval + 2B type + 2B code + 4B value = 16 bytes
             let mut buf = [0u8; 16];
             loop {
@@ -66,9 +73,23 @@ impl ButtonMonitor {
                     continue;
                 }
 
+                // Reset long-hold flag on volume down release
+                if code == KEY_VOLUMEDOWN && value == 0 {
+                    vol_down_long_fired.store(false, Ordering::Relaxed);
+                    continue;
+                }
+
                 let event = match code {
                     KEY_VOLUMEUP if value == 1 || value == 2 => Some(ButtonEvent::VolumeUp),
-                    KEY_VOLUMEDOWN if value == 1 || value == 2 => Some(ButtonEvent::VolumeDown),
+                    KEY_VOLUMEDOWN if value == 1 => Some(ButtonEvent::VolumeDown),
+                    KEY_VOLUMEDOWN if value == 2 => {
+                        // Emit VolumeDownLong only once per hold
+                        if !vol_down_long_fired.swap(true, Ordering::Relaxed) {
+                            Some(ButtonEvent::VolumeDownLong)
+                        } else {
+                            None
+                        }
+                    }
                     KEY_MUTE if value == 1 => Some(ButtonEvent::Mute),
                     KEY_PLAYPAUSE if value == 1 => Some(ButtonEvent::PlayPause),
                     _ => None,

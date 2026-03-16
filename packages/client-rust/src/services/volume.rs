@@ -10,9 +10,14 @@ pub struct VolumeControl {
 
 static INSTANCE: LazyLock<VolumeControl> = LazyLock::new(VolumeControl::new);
 
-const STEP: i32 = 25;
+/// 10% of 255 ≈ 26
+const STEP: i32 = 26;
 const MIN: i32 = 0;
+/// Minimum volume that is still audible (~5%)
+const MIN_AUDIBLE: i32 = 13;
 const MAX: i32 = 255;
+
+const VOLUME_SOUND: &str = "/usr/share/sound-vendor/common/volume.wav";
 
 impl VolumeControl {
     fn new() -> Self {
@@ -40,22 +45,40 @@ impl VolumeControl {
         }
     }
 
-    pub async fn volume_up(&self) -> i32 {
+    pub async fn is_muted(&self) -> bool {
+        self.muted_volume.lock().await.is_some()
+    }
+
+    /// Increase volume by 10%. Returns None if muted (no-op).
+    pub async fn volume_up(&self) -> Option<i32> {
+        if self.is_muted().await {
+            return None;
+        }
         let mut vol = self.volume.lock().await;
         *vol = (*vol + STEP).min(MAX);
+        let value = *vol;
+        drop(vol);
+        self.set_volume(value).await;
+        Some(value)
+    }
+
+    /// Decrease volume by 10%, clamped to minimum audible level.
+    pub async fn volume_down(&self) -> i32 {
+        let mut vol = self.volume.lock().await;
+        *vol = (*vol - STEP).max(MIN_AUDIBLE);
         let value = *vol;
         drop(vol);
         self.set_volume(value).await;
         value
     }
 
-    pub async fn volume_down(&self) -> i32 {
+    /// Set volume to minimum audible level.
+    pub async fn set_to_minimum(&self) -> i32 {
         let mut vol = self.volume.lock().await;
-        *vol = (*vol - STEP).max(MIN);
-        let value = *vol;
+        *vol = MIN_AUDIBLE;
         drop(vol);
-        self.set_volume(value).await;
-        value
+        self.set_volume(MIN_AUDIBLE).await;
+        MIN_AUDIBLE
     }
 
     pub async fn toggle_mute(&self) -> bool {
@@ -76,6 +99,12 @@ impl VolumeControl {
             println!("🔇 Muted, saved volume: {}", vol);
             true
         }
+    }
+
+    /// Play the volume feedback beep (fire-and-forget).
+    pub async fn play_volume_sound(&self) {
+        let cmd = format!("aplay {} 2>/dev/null &", VOLUME_SOUND);
+        let _ = run_shell(&cmd).await;
     }
 
     async fn set_volume(&self, value: i32) {

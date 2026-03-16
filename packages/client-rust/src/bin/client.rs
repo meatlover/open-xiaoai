@@ -98,31 +98,38 @@ impl AppClient {
         // Start button monitor
         self.button_monitor
             .start(|event| async move {
+                let vc = VolumeControl::instance();
                 match event {
                     ButtonEvent::VolumeUp => {
-                        let vol = VolumeControl::instance().volume_up().await;
-                        println!("🔊 Volume up: {}", vol);
-                        led::show_rgb("0000ff").await;
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        led::shut(8).await;
+                        // Do nothing if muted
+                        if let Some(vol) = vc.volume_up().await {
+                            println!("🔊 Volume up: {}", vol);
+                            vc.play_volume_sound().await;
+                        }
                     }
                     ButtonEvent::VolumeDown => {
-                        let vol = VolumeControl::instance().volume_down().await;
+                        let vol = vc.volume_down().await;
                         println!("🔉 Volume down: {}", vol);
-                        led::show_rgb("0000ff").await;
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        led::shut(8).await;
+                        vc.play_volume_sound().await;
+                    }
+                    ButtonEvent::VolumeDownLong => {
+                        let vol = vc.set_to_minimum().await;
+                        println!("🔉 Volume minimum: {}", vol);
+                        vc.play_volume_sound().await;
                     }
                     ButtonEvent::Mute => {
-                        let muted = VolumeControl::instance().toggle_mute().await;
+                        let muted = vc.toggle_mute().await;
                         if muted {
-                            led::show_rgb("ff0000").await;
+                            // Muted: constant yellow LED, no sound
+                            led::show_rgb("ffff00").await;
                         } else {
+                            // Unmuted: turn off yellow LED, play feedback
                             led::shut(8).await;
+                            vc.play_volume_sound().await;
                         }
                     }
                     ButtonEvent::PlayPause => {
-                        println!("⏯️ Play/Pause pressed");
+                        println!("⏹️ Stop playback");
                         let _ = AudioPlayer::instance().stop().await;
                     }
                 }

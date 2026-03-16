@@ -211,9 +211,6 @@ def strip_markdown(text: str) -> str:
 TTS_DIR = Path(tempfile.mkdtemp(prefix="xiaoai-tts-"))
 logger.info("TTS temp dir: %s", TTS_DIR)
 
-# Pre-generated "让我想想" PCM audio (populated at first use)
-THINKING_PCM: Optional[bytes] = None
-
 # Audio streaming chunk size: ~128ms at 16kHz 16-bit mono
 AUDIO_CHUNK_SIZE = 4096
 
@@ -461,11 +458,32 @@ async def playback_worker(
         await rpc_call(websocket, "stop_play", None, pending_rpcs)
 
 
+# --- Answer deduplication: ensures only one provider speaks per query ---
+
+_answered_lock = asyncio.Lock()
+_answered: Dict[str, bool] = {}
+
+
+async def claim_answer(query_id: str) -> bool:
+    """Atomically claim the right to speak for a query. Returns True if granted."""
+    async with _answered_lock:
+        if _answered.get(query_id):
+            return False
+        _answered[query_id] = True
+        return True
+
+
+def release_answer(query_id: str) -> None:
+    """Remove a query_id from the answered set (cleanup)."""
+    _answered.pop(query_id, None)
+
+
 # --- Core conversation handler ---
 
 async def stream_response_with_tts(
     websocket, provider: Dict[str, str], messages: List[Dict],
     client_addr: str, pending_rpcs: Dict[str, asyncio.Future],
+    query_id: str = "",
 ) -> Optional[str]:
     """Stream LLM response with tool calling, think-block stripping, and TTS.
 
@@ -482,6 +500,7 @@ async def stream_response_with_tts(
     try:
         result = await _stream_and_enqueue_tts(
             websocket, provider, messages, client_addr, use_tools, pb_queue,
+            query_id,
         )
     finally:
         # Signal worker to stop and wait for all queued audio to finish playing
@@ -494,7 +513,7 @@ async def stream_response_with_tts(
 async def _stream_and_enqueue_tts(
     websocket, provider: Dict[str, str], messages: List[Dict],
     client_addr: str, use_tools: Optional[list],
-    pb_queue: asyncio.Queue,
+    pb_queue: asyncio.Queue, query_id: str = "",
 ) -> Optional[str]:
     """Inner streaming loop: generates TTS and enqueues PCM bytes for playback."""
     for _round in range(MAX_TOOL_ROUNDS):
@@ -543,6 +562,11 @@ async def _stream_and_enqueue_tts(
                 sentence = sentence_buffer[:end_pos].strip()
                 sentence_buffer = sentence_buffer[end_pos:]
                 if sentence and len(sentence) >= MIN_SENTENCE_CHARS:
+                    # Claim answer lock before first TTS playback
+                    if query_id and not _answered.get(query_id):
+                        if not await claim_answer(query_id):
+                            logger.info("Query %s already answered, aborting TTS", query_id)
+                            return "".join(assistant_text) if assistant_text else None
                     sentence = strip_markdown(sentence)
                     logger.info("TTS sentence: %s", sentence)
                     pcm = await tts_generate(sentence)
@@ -585,6 +609,11 @@ async def _stream_and_enqueue_tts(
             sentence_buffer += raw_buffer
         remaining = sentence_buffer.strip()
         if remaining:
+            # Claim answer lock before first TTS playback
+            if query_id and not _answered.get(query_id):
+                if not await claim_answer(query_id):
+                    logger.info("Query %s already answered, aborting TTS", query_id)
+                    return "".join(assistant_text) if assistant_text else None
             remaining = strip_markdown(remaining)
             logger.info("TTS final: %s", remaining)
             pcm = await tts_generate(remaining)
@@ -696,14 +725,8 @@ async def handle_connection(websocket) -> None:
 
             session_messages.append({"role": "user", "content": text})
 
-            # Play "让我想想" via audio stream
-            global THINKING_PCM
-            if THINKING_PCM is None:
-                THINKING_PCM = await tts_generate("让我想想")
-            if THINKING_PCM:
-                await rpc_call(websocket, "start_play", None, pending_rpcs)
-                await send_audio_stream(websocket, THINKING_PCM)
-                await rpc_call(websocket, "stop_play", None, pending_rpcs)
+            # Unique ID for this query — used to prevent duplicate answers
+            query_id = uuid.uuid4().hex[:12]
 
             # Try each provider in precedence order
             response = None
@@ -729,7 +752,7 @@ async def handle_connection(websocket) -> None:
                     response = await asyncio.wait_for(
                         stream_response_with_tts(
                             websocket, provider, messages_for_provider,
-                            client_addr, pending_rpcs,
+                            client_addr, pending_rpcs, query_id,
                         ),
                         timeout=LLM_TIMEOUT,
                     )
@@ -738,18 +761,36 @@ async def handle_connection(websocket) -> None:
                         session_messages = messages_for_provider[1:]  # strip system msg
                         break
                     else:
+                        log_conversation_turn(
+                            "assistant", "(empty)",
+                            client=client_addr,
+                            provider=provider["name"],
+                            model=provider["model"],
+                        )
                         logger.warning(
                             "Provider '%s' returned empty response — trying next",
                             provider["name"],
                         )
                         continue
                 except asyncio.TimeoutError:
+                    log_conversation_turn(
+                        "assistant", "(timeout)",
+                        client=client_addr,
+                        provider=provider["name"],
+                        model=provider["model"],
+                    )
                     logger.warning(
                         "Provider '%s' timed out after %.0fs",
                         provider["name"], LLM_TIMEOUT,
                     )
                     continue
                 except Exception as exc:
+                    log_conversation_turn(
+                        "assistant", f"(error: {exc})",
+                        client=client_addr,
+                        provider=provider["name"],
+                        model=provider["model"],
+                    )
                     logger.warning(
                         "Provider '%s' failed: %s — trying next",
                         provider["name"], exc,
@@ -786,6 +827,9 @@ async def handle_connection(websocket) -> None:
                     await rpc_call(websocket, "stop_play", None, pending_rpcs)
                 session_messages.pop()  # remove the unanswered user message
                 await send_json(websocket, {"type": "error", "error": "all_providers_failed"})
+
+            # Cleanup answer lock for this query
+            release_answer(query_id)
 
             await send_json(websocket, {"type": "llm_end"})
 

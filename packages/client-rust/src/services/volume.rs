@@ -40,6 +40,9 @@ impl VolumeControl {
                 .find(|&v| v >= MIN && v <= MAX)
             {
                 *self.volume.lock().await = val;
+                // Sync notifyvol to match mysoftvol on startup
+                let cmd = format!("amixer -c 0 set notifyvol {}", val);
+                let _ = run_shell(&cmd).await;
                 println!("🔊 Initial volume: {}", val);
             }
         }
@@ -108,7 +111,12 @@ impl VolumeControl {
     }
 
     async fn set_volume(&self, value: i32) {
-        let cmd = format!("amixer -c 0 set mysoftvol {}", value);
+        // Set both mysoftvol (our audio) and notifyvol (firmware wakeup/notifications)
+        // so volume buttons control all audio output consistently.
+        let cmd = format!(
+            "amixer -c 0 set mysoftvol {} && amixer -c 0 set notifyvol {}",
+            value, value
+        );
         let _ = run_shell(&cmd).await;
     }
 }

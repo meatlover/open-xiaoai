@@ -87,19 +87,25 @@ impl VolumeControl {
     pub async fn toggle_mute(&self) -> bool {
         let mut muted = self.muted_volume.lock().await;
         if let Some(saved) = muted.take() {
-            // Unmute: restore saved volume
+            // Unmute: restore volume and re-enable microphone
             drop(muted);
             *self.volume.lock().await = saved;
             self.set_volume(saved).await;
-            println!("🔊 Unmuted, restored volume: {}", saved);
+            let _ = run_shell(
+                "ubus -t1 -S call pnshelper event_notify '{\"src\":3, \"event\":7}'"
+            ).await;
+            println!("🔊 Unmuted, restored volume: {}, mic on", saved);
             false
         } else {
-            // Mute: save current volume, set to 0
+            // Mute: save volume, silence output, disable microphone
             let vol = *self.volume.lock().await;
             *muted = Some(vol);
             drop(muted);
             self.set_volume(0).await;
-            println!("🔇 Muted, saved volume: {}", vol);
+            let _ = run_shell(
+                "ubus -t1 -S call pnshelper event_notify '{\"src\":3, \"event\":8}'"
+            ).await;
+            println!("🔇 Muted, saved volume: {}, mic off", vol);
             true
         }
     }

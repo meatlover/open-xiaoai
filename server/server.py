@@ -49,7 +49,8 @@ def log_conversation_turn(
 WS_HOST = os.getenv("WS_HOST", "0.0.0.0")
 WS_PORT = int(os.getenv("WS_PORT", "9000"))
 
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "10"))
+LLM_FIRST_TOKEN_TIMEOUT = float(os.getenv("LLM_FIRST_TOKEN_TIMEOUT", "10"))
+LLM_FULL_RESPONSE_TIMEOUT = float(os.getenv("LLM_FULL_RESPONSE_TIMEOUT", "30"))
 
 TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 
@@ -442,20 +443,26 @@ async def tts_generate(text: str) -> Optional[bytes]:
 async def playback_worker(
     websocket, queue: asyncio.Queue, pending_rpcs: Dict[str, asyncio.Future],
 ) -> None:
-    """Stream PCM audio to device via WebSocket."""
-    # Start AudioPlayer on device
-    await rpc_call(websocket, "start_play", None, pending_rpcs)
+    """Stream PCM audio to device via WebSocket.
+
+    Lazily calls start_play on first audio chunk, so no device RPC is made
+    if no audio is ever enqueued (e.g. claim denied before any TTS).
+    """
+    started = False
     try:
         while True:
             pcm_bytes = await queue.get()
             if pcm_bytes is None:  # sentinel: no more items
                 queue.task_done()
                 break
+            if not started:
+                await rpc_call(websocket, "start_play", None, pending_rpcs)
+                started = True
             await send_audio_stream(websocket, pcm_bytes)
             queue.task_done()
     finally:
-        # Stop AudioPlayer
-        await rpc_call(websocket, "stop_play", None, pending_rpcs)
+        if started:
+            await rpc_call(websocket, "stop_play", None, pending_rpcs)
 
 
 # --- Answer deduplication: ensures only one provider speaks per query ---
@@ -502,8 +509,16 @@ async def stream_response_with_tts(
             websocket, provider, messages, client_addr, use_tools, pb_queue,
             query_id,
         )
+    except BaseException:
+        # On error/timeout: discard queued audio so playback stops immediately
+        while not pb_queue.empty():
+            try:
+                pb_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        raise
     finally:
-        # Signal worker to stop and wait for all queued audio to finish playing
+        # Signal worker to stop and wait for remaining audio (if any) to finish
         await pb_queue.put(None)
         await worker
 
@@ -515,68 +530,98 @@ async def _stream_and_enqueue_tts(
     client_addr: str, use_tools: Optional[list],
     pb_queue: asyncio.Queue, query_id: str = "",
 ) -> Optional[str]:
-    """Inner streaming loop: generates TTS and enqueues PCM bytes for playback."""
+    """Inner streaming loop: generates TTS and enqueues PCM bytes for playback.
+
+    Applies two-tier timeout:
+    - LLM_FIRST_TOKEN_TIMEOUT: max wait for the first token from the provider.
+    - LLM_FULL_RESPONSE_TIMEOUT: max time from first token to completion.
+    Raises asyncio.TimeoutError if either is exceeded.
+    """
     for _round in range(MAX_TOOL_ROUNDS):
         assistant_text: List[str] = []
         sentence_buffer = ""
         in_think_block = False
         raw_buffer = ""
         tool_calls_out: List[Dict] = []
+        first_token_received = False
+        deadline = asyncio.get_event_loop().time() + LLM_FIRST_TOKEN_TIMEOUT
 
-        async for token in stream_chat_completion(
+        token_iter = stream_chat_completion(
             provider, messages,
             tools=use_tools, tool_calls_out=tool_calls_out,
-        ):
-            assistant_text.append(token)
-            raw_buffer += token
+        ).__aiter__()
 
-            # Strip <think>...</think> blocks (may span many tokens)
+        try:
             while True:
-                if in_think_block:
-                    close_idx = raw_buffer.find("</think>")
-                    if close_idx != -1:
-                        raw_buffer = raw_buffer[close_idx + len("</think>"):]
-                        in_think_block = False
-                    else:
-                        raw_buffer = ""
-                        break
-                else:
-                    open_idx = raw_buffer.find("<think>")
-                    if open_idx != -1:
-                        sentence_buffer += raw_buffer[:open_idx]
-                        raw_buffer = raw_buffer[open_idx + len("<think>"):]
-                        in_think_block = True
-                    else:
-                        safe = max(0, len(raw_buffer) - 6)
-                        sentence_buffer += raw_buffer[:safe]
-                        raw_buffer = raw_buffer[safe:]
-                        break
-
-            # TTS sentence chunking — split at sentence-ending punctuation
-            while True:
-                m = SENTENCE_ENDINGS.search(sentence_buffer)
-                if not m:
+                remaining_time = deadline - asyncio.get_event_loop().time()
+                if remaining_time <= 0:
+                    kind = "full response" if first_token_received else "first token"
+                    raise asyncio.TimeoutError(f"{kind} timeout")
+                try:
+                    token = await asyncio.wait_for(
+                        token_iter.__anext__(), timeout=remaining_time,
+                    )
+                except StopAsyncIteration:
                     break
-                # Split at the end of the punctuation mark
-                end_pos = m.end()
-                sentence = sentence_buffer[:end_pos].strip()
-                sentence_buffer = sentence_buffer[end_pos:]
-                if sentence and len(sentence) >= MIN_SENTENCE_CHARS:
-                    # Claim answer lock before first TTS playback
-                    if query_id and not _answered.get(query_id):
+
+                if not first_token_received:
+                    first_token_received = True
+                    # Claim answer on first token — block other providers
+                    if query_id:
                         if not await claim_answer(query_id):
-                            logger.info("Query %s already answered, aborting TTS", query_id)
-                            return "".join(assistant_text) if assistant_text else None
-                    sentence = strip_markdown(sentence)
-                    logger.info("TTS sentence: %s", sentence)
-                    pcm = await tts_generate(sentence)
-                    if pcm:
-                        await pb_queue.put(pcm)
-                elif sentence:
-                    # Too short — restore to buffer and wait for more content
-                    # IMPORTANT: Break to avoid infinite loop on short sentences like "1."
-                    sentence_buffer = sentence + sentence_buffer
-                    break
+                            logger.info("Query %s already answered, aborting", query_id)
+                            return None
+                    # Switch to full-response deadline
+                    deadline = asyncio.get_event_loop().time() + LLM_FULL_RESPONSE_TIMEOUT
+                    logger.info("First token from %s", provider["name"])
+
+                assistant_text.append(token)
+                raw_buffer += token
+
+                # Strip <think>...</think> blocks (may span many tokens)
+                while True:
+                    if in_think_block:
+                        close_idx = raw_buffer.find("</think>")
+                        if close_idx != -1:
+                            raw_buffer = raw_buffer[close_idx + len("</think>"):]
+                            in_think_block = False
+                        else:
+                            raw_buffer = ""
+                            break
+                    else:
+                        open_idx = raw_buffer.find("<think>")
+                        if open_idx != -1:
+                            sentence_buffer += raw_buffer[:open_idx]
+                            raw_buffer = raw_buffer[open_idx + len("<think>"):]
+                            in_think_block = True
+                        else:
+                            safe = max(0, len(raw_buffer) - 6)
+                            sentence_buffer += raw_buffer[:safe]
+                            raw_buffer = raw_buffer[safe:]
+                            break
+
+                # TTS sentence chunking — split at sentence-ending punctuation
+                while True:
+                    m = SENTENCE_ENDINGS.search(sentence_buffer)
+                    if not m:
+                        break
+                    # Split at the end of the punctuation mark
+                    end_pos = m.end()
+                    sentence = sentence_buffer[:end_pos].strip()
+                    sentence_buffer = sentence_buffer[end_pos:]
+                    if sentence and len(sentence) >= MIN_SENTENCE_CHARS:
+                        sentence = strip_markdown(sentence)
+                        logger.info("TTS sentence: %s", sentence)
+                        pcm = await tts_generate(sentence)
+                        if pcm:
+                            await pb_queue.put(pcm)
+                    elif sentence:
+                        # Too short — restore to buffer and wait for more content
+                        # IMPORTANT: Break to avoid infinite loop on short sentences like "1."
+                        sentence_buffer = sentence + sentence_buffer
+                        break
+        finally:
+            await token_iter.aclose()
 
         if tool_calls_out:
             logger.info("Tool calls requested: %s", [tc["name"] for tc in tool_calls_out])
@@ -609,11 +654,6 @@ async def _stream_and_enqueue_tts(
             sentence_buffer += raw_buffer
         remaining = sentence_buffer.strip()
         if remaining:
-            # Claim answer lock before first TTS playback
-            if query_id and not _answered.get(query_id):
-                if not await claim_answer(query_id):
-                    logger.info("Query %s already answered, aborting TTS", query_id)
-                    return "".join(assistant_text) if assistant_text else None
             remaining = strip_markdown(remaining)
             logger.info("TTS final: %s", remaining)
             pcm = await tts_generate(remaining)
@@ -749,12 +789,9 @@ async def handle_connection(websocket) -> None:
 
                 try:
                     logger.info("Trying provider: %s (%s)", provider["name"], provider["model"])
-                    response = await asyncio.wait_for(
-                        stream_response_with_tts(
-                            websocket, provider, messages_for_provider,
-                            client_addr, pending_rpcs, query_id,
-                        ),
-                        timeout=LLM_TIMEOUT,
+                    response = await stream_response_with_tts(
+                        websocket, provider, messages_for_provider,
+                        client_addr, pending_rpcs, query_id,
                     )
                     if response is not None and response.strip():
                         used_provider = provider
@@ -772,17 +809,21 @@ async def handle_connection(websocket) -> None:
                             provider["name"],
                         )
                         continue
-                except asyncio.TimeoutError:
+                except asyncio.TimeoutError as te:
                     log_conversation_turn(
-                        "assistant", "(timeout)",
+                        "assistant", f"(timeout: {te})",
                         client=client_addr,
                         provider=provider["name"],
                         model=provider["model"],
                     )
                     logger.warning(
-                        "Provider '%s' timed out after %.0fs",
-                        provider["name"], LLM_TIMEOUT,
+                        "Provider '%s' timed out: %s",
+                        provider["name"], te,
                     )
+                    # If this provider already spoke, don't try others
+                    if _answered.get(query_id):
+                        logger.info("Provider '%s' already spoke, not trying fallback", provider["name"])
+                        break
                     continue
                 except Exception as exc:
                     log_conversation_turn(
@@ -795,6 +836,10 @@ async def handle_connection(websocket) -> None:
                         "Provider '%s' failed: %s — trying next",
                         provider["name"], exc,
                     )
+                    # If this provider already spoke, don't try others
+                    if _answered.get(query_id):
+                        logger.info("Provider '%s' already spoke, not trying fallback", provider["name"])
+                        break
                     continue
 
             if response is not None and used_provider is not None:
@@ -817,6 +862,10 @@ async def handle_connection(websocket) -> None:
                         pending_rpcs,
                         timeout_secs=5,
                     )
+            elif _answered.get(query_id):
+                # A provider already spoke (partial TTS) but timed out before
+                # returning a full response. Don't play error or pop history.
+                logger.warning("Provider spoke partially before timeout for: %s", text)
             else:
                 logger.error("All providers failed for: %s", text)
                 # Play fallback message via audio stream

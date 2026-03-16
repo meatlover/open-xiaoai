@@ -769,6 +769,13 @@ async def handle_connection(websocket) -> None:
                         "[%s] Full response: %s",
                         used_provider["name"], response[:200],
                     )
+                    # Play "response complete" chime on device
+                    await run_shell_on_device(
+                        websocket,
+                        "aplay /data/open-xiaoai/sounds/multirounds_tone.wav 2>/dev/null",
+                        pending_rpcs,
+                        timeout_secs=5,
+                    )
             else:
                 logger.error("All providers failed for: %s", text)
                 # Play fallback message via audio stream

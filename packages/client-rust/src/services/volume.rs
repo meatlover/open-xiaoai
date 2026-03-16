@@ -17,7 +17,7 @@ const MIN: i32 = 0;
 const MIN_AUDIBLE: i32 = 13;
 const MAX: i32 = 255;
 
-const VOLUME_SOUND: &str = "/usr/share/sound-vendor/common/volume.wav";
+const VOLUME_SOUND: &str = "/data/open-xiaoai/volume.wav";
 
 impl VolumeControl {
     fn new() -> Self {

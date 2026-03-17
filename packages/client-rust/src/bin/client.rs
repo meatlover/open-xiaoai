@@ -22,6 +22,19 @@ use open_xiaoai::services::monitor::button::{ButtonEvent, ButtonMonitor};
 use open_xiaoai::services::monitor::instruction::InstructionMonitor;
 use open_xiaoai::services::volume::VolumeControl;
 
+/// Check if the query should be handled by factory AI (simple daily questions).
+fn is_factory_ai_query(text: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        // Weather
+        "天气", "气温", "下雨", "下雪", "温度", "多少度", "冷不冷", "热不热",
+        // Date/Time
+        "几点", "几号", "星期几", "日期", "什么时候",
+        // Timers/Alarms
+        "闹钟", "定时", "倒计时", "提醒我",
+    ];
+    PATTERNS.iter().any(|p| text.contains(p))
+}
+
 struct AppClient {
     kws_monitor: KwsMonitor,
     instruction_monitor: InstructionMonitor,
@@ -173,8 +186,22 @@ impl AppClient {
                         let _ = open_xiaoai::utils::shell::run_shell(
                             "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
                         ).await;
-                        if let Err(e) = send_user_input(session_id, text).await {
-                            eprintln!("❌ Failed to send user_input: {}", e);
+
+                        if is_factory_ai_query(&text) {
+                            // Simple query → open factory gate, let factory AI answer
+                            println!("🏭 Factory AI query: {}", text);
+                            let vol = VolumeControl::instance().get_volume().await;
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                &format!("amixer -c 0 set factorygatevol {} 2>/dev/null", vol)
+                            ).await;
+                        } else {
+                            // Complex query → close factory gate, send to brain
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "amixer -c 0 set factorygatevol 0 2>/dev/null"
+                            ).await;
+                            if let Err(e) = send_user_input(session_id, text).await {
+                                eprintln!("❌ Failed to send user_input: {}", e);
+                            }
                         }
                     }
 

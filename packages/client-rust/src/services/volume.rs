@@ -43,8 +43,14 @@ impl VolumeControl {
                 println!("🔊 Initial volume: {}", val);
             }
         }
-        // Mute mysoftvol (factory AI) — our audio goes through notifyvol
-        let _ = run_shell("amixer -c 0 set mysoftvol 0").await;
+        // Mute factory AI via factorygate — a softvol gate between mysoftvol and dmixer.
+        // Factory firmware can bump mysoftvol all it wants; factorygatevol stays at 0.
+        // Play a silent frame through default PCM first to create the softvol control.
+        let _ = run_shell("aplay -d 0 /dev/null 2>/dev/null; amixer -c 0 set factorygatevol 0").await;
+    }
+
+    pub async fn get_volume(&self) -> i32 {
+        *self.volume.lock().await
     }
 
     pub async fn is_muted(&self) -> bool {
@@ -112,9 +118,15 @@ impl VolumeControl {
     }
 
     async fn set_volume(&self, value: i32) {
-        // Only set notifyvol (our custom AI audio).
-        // mysoftvol (factory AI) stays muted at 0.
-        let cmd = format!("amixer -c 0 set notifyvol {}", value);
+        // Always set notifyvol (our custom AI audio).
+        // If factorygatevol is open (>0), sync it to the same level.
+        // If factorygatevol is 0 (factory muted), leave it alone.
+        let cmd = format!(
+            "amixer -c 0 set notifyvol {} && \
+             amixer -c 0 get factorygatevol 2>/dev/null | grep -q ' 0 \\[0%\\]' || \
+             amixer -c 0 set factorygatevol {} 2>/dev/null",
+            value, value
+        );
         let _ = run_shell(&cmd).await;
     }
 }

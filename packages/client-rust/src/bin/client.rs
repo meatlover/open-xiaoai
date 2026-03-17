@@ -92,13 +92,6 @@ impl AppClient {
         rpc.add_command("start_recording", start_recording).await;
         rpc.add_command("stop_recording", stop_recording).await;
 
-        // Stop mediaplayer service — brain audio uses aplay via WebSocket streaming,
-        // so mediaplayer is not needed. Stopping via init.d tells procd not to respawn.
-        let _ = open_xiaoai::utils::shell::run_shell(
-            "/etc/init.d/mediaplayer stop"
-        ).await;
-        println!("🔇 Stopped mediaplayer service");
-
         // Stop touchpad daemon — we handle buttons directly via /dev/input/event0
         let _ = open_xiaoai::utils::shell::run_shell(
             "/etc/init.d/touchpad stop"

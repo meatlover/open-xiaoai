@@ -32,17 +32,27 @@ impl VolumeControl {
     }
 
     pub async fn init(&self) {
+        // Default volume (~30%)
+        const DEFAULT_VOL: i32 = 80;
+
+        let mut vol = DEFAULT_VOL;
         let res = run_shell("amixer -c 0 get notifyvol").await;
         if let Ok(res) = res {
-            // Parse value from output like "Mono: Playback 128 [50%]"
+            // Parse value from output like "Front Left: 80 [31%]"
             if let Some(val) = res.stdout.split_whitespace()
                 .filter_map(|s| s.parse::<i32>().ok())
                 .find(|&v| v >= MIN && v <= MAX)
             {
-                *self.volume.lock().await = val;
-                println!("🔊 Initial volume: {}", val);
+                if val > 0 {
+                    vol = val;
+                }
             }
         }
+        *self.volume.lock().await = vol;
+        // Ensure notifyvol is at the resolved level
+        let _ = run_shell(&format!("amixer -c 0 set notifyvol {}", vol)).await;
+        println!("🔊 Initial volume: {}", vol);
+
         // Mute factory AI via factorygate — a softvol gate between mysoftvol and dmixer.
         // Factory firmware can bump mysoftvol all it wants; factorygatevol stays at 0.
         // Play a silent frame through default PCM first to create the softvol control.

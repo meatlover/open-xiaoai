@@ -181,15 +181,16 @@ impl AppClient {
                         ).await;
 
                         if is_factory_ai_query(&text) {
-                            // Simple query → ensure mediaplayer is running, let factory AI answer
+                            // Simple query → unmute factory AI, let it answer
                             println!("🏭 Factory AI query: {}", text);
+                            let vol = VolumeControl::instance().get_volume().await;
                             let _ = open_xiaoai::utils::shell::run_shell(
-                                "/etc/init.d/mediaplayer start >/dev/null 2>&1"
+                                &format!("amixer -c 0 set mysoftvol {}", vol)
                             ).await;
                         } else {
-                            // Complex query → stop mediaplayer (mutes factory AI), send to brain
+                            // Complex query → mute factory AI, send to brain
                             let _ = open_xiaoai::utils::shell::run_shell(
-                                "/etc/init.d/mediaplayer stop >/dev/null 2>&1"
+                                "amixer -c 0 set mysoftvol 0"
                             ).await;
                             if let Err(e) = send_user_input(session_id, text).await {
                                 eprintln!("❌ Failed to send user_input: {}", e);

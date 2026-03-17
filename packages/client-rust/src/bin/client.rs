@@ -181,16 +181,16 @@ impl AppClient {
                         ).await;
 
                         if is_factory_ai_query(&text) {
-                            // Simple query → open factory gate, let factory AI answer
+                            // Simple query → unmute factory AI, let it answer
                             println!("🏭 Factory AI query: {}", text);
                             let vol = VolumeControl::instance().get_volume().await;
                             let _ = open_xiaoai::utils::shell::run_shell(
-                                &format!("amixer -c 0 set factorygatevol {} 2>/dev/null", vol)
+                                &format!("amixer -c 0 set mysoftvol {}", vol)
                             ).await;
                         } else {
-                            // Complex query → close factory gate, send to brain
+                            // Complex query → mute factory AI, send to brain
                             let _ = open_xiaoai::utils::shell::run_shell(
-                                "amixer -c 0 set factorygatevol 0 2>/dev/null"
+                                "amixer -c 0 set mysoftvol 0"
                             ).await;
                             if let Err(e) = send_user_input(session_id, text).await {
                                 eprintln!("❌ Failed to send user_input: {}", e);

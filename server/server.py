@@ -858,7 +858,7 @@ async def handle_connection(websocket) -> None:
                     # Play "response complete" chime on device
                     await run_shell_on_device(
                         websocket,
-                        "aplay /data/open-xiaoai/sounds/multirounds_tone.wav 2>/dev/null",
+                        "aplay -D notify /data/open-xiaoai/sounds/multirounds_tone.wav 2>/dev/null",
                         pending_rpcs,
                         timeout_secs=5,
                     )

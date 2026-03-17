@@ -32,7 +32,7 @@ impl VolumeControl {
     }
 
     pub async fn init(&self) {
-        let res = run_shell("amixer -c 0 get mysoftvol").await;
+        let res = run_shell("amixer -c 0 get notifyvol").await;
         if let Ok(res) = res {
             // Parse value from output like "Mono: Playback 128 [50%]"
             if let Some(val) = res.stdout.split_whitespace()
@@ -40,12 +40,11 @@ impl VolumeControl {
                 .find(|&v| v >= MIN && v <= MAX)
             {
                 *self.volume.lock().await = val;
-                // Sync notifyvol to match mysoftvol on startup
-                let cmd = format!("amixer -c 0 set notifyvol {}", val);
-                let _ = run_shell(&cmd).await;
                 println!("🔊 Initial volume: {}", val);
             }
         }
+        // Mute mysoftvol (factory AI) — our audio goes through notifyvol
+        let _ = run_shell("amixer -c 0 set mysoftvol 0").await;
     }
 
     pub async fn is_muted(&self) -> bool {
@@ -108,17 +107,14 @@ impl VolumeControl {
 
     /// Play the volume feedback beep (fire-and-forget).
     pub async fn play_volume_sound(&self) {
-        let cmd = format!("aplay {} 2>/dev/null &", VOLUME_SOUND);
+        let cmd = format!("aplay -D notify {} 2>/dev/null &", VOLUME_SOUND);
         let _ = run_shell(&cmd).await;
     }
 
     async fn set_volume(&self, value: i32) {
-        // Set both mysoftvol (our audio) and notifyvol (firmware wakeup/notifications)
-        // so volume buttons control all audio output consistently.
-        let cmd = format!(
-            "amixer -c 0 set mysoftvol {} && amixer -c 0 set notifyvol {}",
-            value, value
-        );
+        // Only set notifyvol (our custom AI audio).
+        // mysoftvol (factory AI) stays muted at 0.
+        let cmd = format!("amixer -c 0 set notifyvol {}", value);
         let _ = run_shell(&cmd).await;
     }
 }

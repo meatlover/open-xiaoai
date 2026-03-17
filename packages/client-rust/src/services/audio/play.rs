@@ -71,6 +71,8 @@ impl AudioPlayer {
 
         let mut aplay_thread = Command::new("aplay")
             .args([
+                "-D",
+                "notify",
                 "-t",
                 "raw",
                 "-f",

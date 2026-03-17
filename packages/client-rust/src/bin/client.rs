@@ -171,7 +171,7 @@ impl AppClient {
                         println!("🔥 ASR final result: {}", text);
                         // Play "prompt received" confirmation sound
                         let _ = open_xiaoai::utils::shell::run_shell(
-                            "aplay /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
+                            "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
                         ).await;
                         if let Err(e) = send_user_input(session_id, text).await {
                             eprintln!("❌ Failed to send user_input: {}", e);

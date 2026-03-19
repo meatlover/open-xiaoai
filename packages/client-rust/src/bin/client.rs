@@ -19,7 +19,6 @@ use open_xiaoai::services::connect::message::{MessageManager, WsStream};
 use open_xiaoai::services::connect::rpc::RPC;
 use open_xiaoai::services::led;
 use open_xiaoai::services::monitor::button::{ButtonEvent, ButtonMonitor};
-use open_xiaoai::services::monitor::event_log::{EventLogEvent, EventLogMonitor};
 use open_xiaoai::services::monitor::instruction::InstructionMonitor;
 use open_xiaoai::services::volume::VolumeControl;
 
@@ -39,7 +38,6 @@ fn is_factory_ai_query(text: &str) -> bool {
 struct AppClient {
     kws_monitor: KwsMonitor,
     instruction_monitor: InstructionMonitor,
-    event_log_monitor: EventLogMonitor,
     button_monitor: ButtonMonitor,
     session_id: Arc<Mutex<String>>,
 }
@@ -49,7 +47,6 @@ impl AppClient {
         Self {
             kws_monitor: KwsMonitor::new(),
             instruction_monitor: InstructionMonitor::new(),
-            event_log_monitor: EventLogMonitor::new(),
             button_monitor: ButtonMonitor::new(),
             session_id: Arc::new(Mutex::new(new_session_id())),
         }
@@ -180,6 +177,21 @@ impl AppClient {
 
                         let session_id = session_id_clone.lock().await.clone();
                         println!("🔥 ASR final result: {}", text);
+
+                        // Stop any current brain response (kills aplay mid-stream)
+                        let _ = AudioPlayer::instance().stop().await;
+                        // Tell server to cancel current LLM generation
+                        let interrupt_msg = json!({"type": "interrupt"});
+                        let _ = MessageManager::instance()
+                            .send(tokio_tungstenite::tungstenite::Message::Text(
+                                interrupt_msg.to_string().into(),
+                            ))
+                            .await;
+                        // Stop factory AI playback
+                        let _ = open_xiaoai::utils::shell::run_shell(
+                            "ubus -t 1 call mediaplayer player_play_operation '{\"action\":\"stop\"}' 2>/dev/null"
+                        ).await;
+
                         // Play "prompt received" confirmation sound
                         let _ = open_xiaoai::utils::shell::run_shell(
                             "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
@@ -215,28 +227,6 @@ impl AppClient {
             })
             .await;
 
-        // Monitor event.log for wake-up word — interrupt current response
-        self.event_log_monitor
-            .start(|event| async move {
-                if event == EventLogEvent::Wakeup {
-                    println!("🛑 Wake word during response — interrupting");
-                    // Stop brain AI audio playback
-                    let _ = AudioPlayer::instance().stop().await;
-                    // Tell server to cancel LLM generation
-                    let interrupt_msg = json!({"type": "interrupt"});
-                    let _ = MessageManager::instance()
-                        .send(tokio_tungstenite::tungstenite::Message::Text(
-                            interrupt_msg.to_string().into(),
-                        ))
-                        .await;
-                    // Stop factory AI playback
-                    let _ = open_xiaoai::utils::shell::run_shell(
-                        "ubus -t 1 call mediaplayer player_play_operation '{\"action\":\"stop\"}' 2>/dev/null"
-                    ).await;
-                }
-                Ok(())
-            })
-            .await;
     }
 
     async fn dispose(&mut self) {
@@ -245,7 +235,6 @@ impl AppClient {
         let _ = AudioRecorder::instance().stop_recording().await;
         self.instruction_monitor.stop().await;
         self.kws_monitor.stop().await;
-        self.event_log_monitor.stop().await;
         self.button_monitor.stop().await;
     }
 }

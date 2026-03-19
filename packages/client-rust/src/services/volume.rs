@@ -49,11 +49,8 @@ impl VolumeControl {
             }
         }
         *self.volume.lock().await = vol;
-        // Ensure notifyvol and mysoftvol are at the resolved level
-        let _ = run_shell(&format!(
-            "amixer -c 0 set notifyvol {} && amixer -c 0 set mysoftvol {}",
-            vol, vol
-        )).await;
+        // Sync all volume controls and volume.cfg
+        self.set_volume(vol).await;
         println!("🔊 Initial volume: {}", vol);
         // Close factory gate by default (brain mode). Create the control first
         // by playing a silent frame through the default PCM.

@@ -126,10 +126,11 @@ impl AppClient {
                     ButtonEvent::Mute => {
                         let muted = vc.toggle_mute().await;
                         if muted {
-                            // Muted: orange static LED (pattern 9 = stock mute indicator)
+                            // Muted: play beep confirmation, then orange LED
+                            vc.play_volume_sound().await;
                             led::show(9).await;
                         } else {
-                            // Unmuted: turn off mute LED, play feedback
+                            // Unmuted: turn off mute LED, play beep
                             led::shut(9).await;
                             vc.play_volume_sound().await;
                         }

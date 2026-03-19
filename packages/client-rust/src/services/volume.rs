@@ -104,7 +104,11 @@ impl VolumeControl {
             drop(muted);
             *self.volume.lock().await = saved;
             self.set_volume(saved).await;
-            let _ = run_shell("/etc/init.d/pns mic_on; killall qplayer 2>/dev/null").await;
+            // Re-enable mic via pnshelper directly (event 8 = unmute)
+            // Avoids init.d script which plays voice notification and resets volume.
+            let _ = run_shell(
+                "ubus -t1 -S call pnshelper event_notify '{\"src\":3, \"event\":8}'"
+            ).await;
             println!("🔊 Unmuted, restored volume: {}, mic on", saved);
             false
         } else {
@@ -113,7 +117,10 @@ impl VolumeControl {
             *muted = Some(vol);
             drop(muted);
             self.set_volume(0).await;
-            let _ = run_shell("/etc/init.d/pns mic_off; killall qplayer 2>/dev/null").await;
+            // Disable mic via pnshelper directly (event 7 = mute)
+            let _ = run_shell(
+                "ubus -t1 -S call pnshelper event_notify '{\"src\":3, \"event\":7}'"
+            ).await;
             println!("🔇 Muted, saved volume: {}, mic off", vol);
             true
         }

@@ -106,9 +106,8 @@ impl VolumeControl {
             // Unmute: restore volume and re-enable microphone
             drop(muted);
             *self.volume.lock().await = saved;
-            let _ = run_shell("/etc/init.d/pns mic_on").await;
-            // Re-apply volume after mic_on (it resets notifyvol from volume.cfg)
             self.set_volume(saved).await;
+            let _ = run_shell("/etc/init.d/pns mic_on").await;
             println!("🔊 Unmuted, restored volume: {}, mic on", saved);
             false
         } else {
@@ -116,9 +115,8 @@ impl VolumeControl {
             let vol = *self.volume.lock().await;
             *muted = Some(vol);
             drop(muted);
-            let _ = run_shell("/etc/init.d/pns mic_off").await;
-            // Re-apply mute after mic_off (it resets notifyvol from volume.cfg)
             self.set_volume(0).await;
+            let _ = run_shell("/etc/init.d/pns mic_off").await;
             println!("🔇 Muted, saved volume: {}, mic off", vol);
             true
         }
@@ -132,9 +130,12 @@ impl VolumeControl {
 
     async fn set_volume(&self, value: i32) {
         // Set both notifyvol (our AI) and mysoftvol (factory AI).
+        // Also update volume.cfg so firmware's _set_volume() reads our value
+        // (prevents mic_on/mic_off from resetting notifyvol to stale 160).
         let cmd = format!(
-            "amixer -c 0 set notifyvol {} && amixer -c 0 set mysoftvol {}",
-            value, value
+            "amixer -c 0 set notifyvol {} && amixer -c 0 set mysoftvol {} && \
+             echo 'volume = \"{}\"' > /data/player/volume.cfg",
+            value, value, value
         );
         let _ = run_shell(&cmd).await;
     }

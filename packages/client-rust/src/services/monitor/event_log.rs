@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::sync::Arc;
 
 use crate::base::AppError;
 
@@ -33,12 +34,13 @@ impl EventLogMonitor {
         F: Fn(EventLogEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), AppError>> + Send + 'static,
     {
+        let on_update = Arc::new(on_update);
+
         self.file_monitor
             .start(EVENT_FILE_PATH, move |event| {
-                let on_update = &on_update;
+                let on_update = Arc::clone(&on_update);
                 async move {
                     if let FileMonitorEvent::NewLine(ref line) = event {
-                        // Detect wake-up word: namespace=SpeechWakeup, name=Wakeup
                         if line.contains("\"namespace\":\"SpeechWakeup\"")
                             && line.contains("\"name\":\"Wakeup\"")
                         {

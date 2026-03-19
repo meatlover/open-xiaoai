@@ -130,8 +130,9 @@ impl AppClient {
                             vc.play_volume_sound().await;
                             led::show(9).await;
                         } else {
-                            // Unmuted: turn off mute LED, play beep
+                            // Unmuted: turn off mute LEDs (9=our orange, 7=firmware purple)
                             led::shut(9).await;
+                            led::shut(7).await;
                             vc.play_volume_sound().await;
                         }
                     }

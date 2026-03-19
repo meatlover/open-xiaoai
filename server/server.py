@@ -490,7 +490,7 @@ def release_answer(query_id: str) -> None:
 async def stream_response_with_tts(
     websocket, provider: Dict[str, str], messages: List[Dict],
     client_addr: str, pending_rpcs: Dict[str, asyncio.Future],
-    query_id: str = "",
+    query_id: str = "", cancel_event: Optional[asyncio.Event] = None,
 ) -> Optional[str]:
     """Stream LLM response with tool calling, think-block stripping, and TTS.
 
@@ -507,10 +507,10 @@ async def stream_response_with_tts(
     try:
         result = await _stream_and_enqueue_tts(
             websocket, provider, messages, client_addr, use_tools, pb_queue,
-            query_id,
+            query_id, cancel_event,
         )
     except BaseException:
-        # On error/timeout: discard queued audio so playback stops immediately
+        # On error/timeout/interrupt: discard queued audio so playback stops immediately
         while not pb_queue.empty():
             try:
                 pb_queue.get_nowait()
@@ -529,6 +529,7 @@ async def _stream_and_enqueue_tts(
     websocket, provider: Dict[str, str], messages: List[Dict],
     client_addr: str, use_tools: Optional[list],
     pb_queue: asyncio.Queue, query_id: str = "",
+    cancel_event: Optional[asyncio.Event] = None,
 ) -> Optional[str]:
     """Inner streaming loop: generates TTS and enqueues PCM bytes for playback.
 
@@ -553,6 +554,11 @@ async def _stream_and_enqueue_tts(
 
         try:
             while True:
+                # Check for interrupt from wake-up word
+                if cancel_event and cancel_event.is_set():
+                    logger.info("Generation interrupted by wake word")
+                    return "".join(assistant_text) if assistant_text else None
+
                 remaining_time = deadline - asyncio.get_event_loop().time()
                 if remaining_time <= 0:
                     kind = "full response" if first_token_received else "first token"
@@ -670,6 +676,8 @@ async def handle_connection(websocket) -> None:
     session_messages: List[Dict] = []
     pending_rpcs: Dict[str, asyncio.Future] = {}
     user_queue: asyncio.Queue[Dict] = asyncio.Queue()
+    # Cancel event: set by ws_reader on interrupt, checked by streaming loop
+    cancel_event = asyncio.Event()
     logger.info("Client connected: %s", websocket.remote_address)
 
     async def ws_reader():
@@ -693,6 +701,12 @@ async def handle_connection(websocket) -> None:
                         fut.set_result(resp)
                     else:
                         logger.debug("Unmatched RPC response id=%s", rid)
+                    continue
+
+                # Interrupt: cancel current LLM generation immediately
+                if message.get("type") == "interrupt":
+                    logger.info("Interrupt received — cancelling current generation")
+                    cancel_event.set()
                     continue
 
                 # Everything else goes to the user message queue
@@ -765,6 +779,9 @@ async def handle_connection(websocket) -> None:
 
             session_messages.append({"role": "user", "content": text})
 
+            # Clear any previous interrupt before starting new generation
+            cancel_event.clear()
+
             # Unique ID for this query — used to prevent duplicate answers
             query_id = uuid.uuid4().hex[:12]
 
@@ -792,6 +809,7 @@ async def handle_connection(websocket) -> None:
                     response = await stream_response_with_tts(
                         websocket, provider, messages_for_provider,
                         client_addr, pending_rpcs, query_id,
+                        cancel_event,
                     )
                     if response is not None and response.strip():
                         used_provider = provider

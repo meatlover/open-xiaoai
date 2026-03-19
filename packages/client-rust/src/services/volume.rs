@@ -106,8 +106,9 @@ impl VolumeControl {
             // Unmute: restore volume and re-enable microphone
             drop(muted);
             *self.volume.lock().await = saved;
-            self.set_volume(saved).await;
             let _ = run_shell("/etc/init.d/pns mic_on").await;
+            // Re-apply volume after mic_on (it resets notifyvol from volume.cfg)
+            self.set_volume(saved).await;
             println!("🔊 Unmuted, restored volume: {}, mic on", saved);
             false
         } else {
@@ -115,8 +116,9 @@ impl VolumeControl {
             let vol = *self.volume.lock().await;
             *muted = Some(vol);
             drop(muted);
-            self.set_volume(0).await;
             let _ = run_shell("/etc/init.d/pns mic_off").await;
+            // Re-apply mute after mic_off (it resets notifyvol from volume.cfg)
+            self.set_volume(0).await;
             println!("🔇 Muted, saved volume: {}, mic off", vol);
             true
         }

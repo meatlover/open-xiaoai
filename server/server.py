@@ -898,6 +898,23 @@ async def handle_connection(websocket) -> None:
             # Cleanup answer lock for this query
             release_answer(query_id)
 
+            # Disable firmware continuous-dialogue mode after each response so
+            # the device requires a new wake word for the next query.
+            if not CONTINUOUS_MODE:
+                try:
+                    cancel_script = (
+                        "ubus call pnshelper event_notify "
+                        "'{\"src\":3, \"event\":7}' && "
+                        "sleep 0.3 && "
+                        "ubus call pnshelper event_notify "
+                        "'{\"src\":3, \"event\":8}'"
+                    )
+                    await run_shell_on_device(
+                        websocket, cancel_script, pending_rpcs, timeout_secs=5,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to cancel continuous mode: %s", exc)
+
             await send_json(websocket, {"type": "llm_end"})
 
     except websockets.ConnectionClosed:

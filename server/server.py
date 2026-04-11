@@ -759,21 +759,17 @@ async def handle_connection(websocket) -> None:
                     client=client_addr, provider="filter",
                 )
                 if not CONTINUOUS_MODE:
-                    # Cancel firmware continuous-dialogue mode (mic-on then mic-off)
                     try:
-                        cancel_script = (
-                            "ubus call pnshelper event_notify "
-                            "'{\"src\":3, \"event\":7}' && "
-                            "sleep 0.3 && "
-                            "ubus call pnshelper event_notify "
-                            "'{\"src\":3, \"event\":8}'"
+                        exit_script = (
+                            "ubus call mibrain aivs_event_post "
+                            "'{\"namespace\":\"Dialog\",\"name\":\"ExitContinuousDialog\",\"payload\":\"{}\"}'"
                         )
                         await run_shell_on_device(
-                            websocket, cancel_script, pending_rpcs, timeout_secs=5,
+                            websocket, exit_script, pending_rpcs, timeout_secs=5,
                         )
-                        logger.info("Cancelled firmware continuous-dialogue mode")
+                        logger.info("Exited continuous dialog mode")
                     except Exception as exc:
-                        logger.warning("Failed to cancel continuous mode: %s", exc)
+                        logger.warning("Failed to exit continuous dialog: %s", exc)
                 await send_json(websocket, {"type": "llm_end"})
                 continue
 
@@ -898,22 +894,19 @@ async def handle_connection(websocket) -> None:
             # Cleanup answer lock for this query
             release_answer(query_id)
 
-            # Disable firmware continuous-dialogue mode after each response so
+            # Disable firmware continuous-dialog mode after each response so
             # the device requires a new wake word for the next query.
             if not CONTINUOUS_MODE:
                 try:
-                    cancel_script = (
-                        "ubus call pnshelper event_notify "
-                        "'{\"src\":3, \"event\":7}' && "
-                        "sleep 0.3 && "
-                        "ubus call pnshelper event_notify "
-                        "'{\"src\":3, \"event\":8}'"
+                    exit_script = (
+                        "ubus call mibrain aivs_event_post "
+                        "'{\"namespace\":\"Dialog\",\"name\":\"ExitContinuousDialog\",\"payload\":\"{}\"}'"
                     )
                     await run_shell_on_device(
-                        websocket, cancel_script, pending_rpcs, timeout_secs=5,
+                        websocket, exit_script, pending_rpcs, timeout_secs=5,
                     )
                 except Exception as exc:
-                    logger.warning("Failed to cancel continuous mode: %s", exc)
+                    logger.warning("Failed to exit continuous dialog: %s", exc)
 
             await send_json(websocket, {"type": "llm_end"})
 

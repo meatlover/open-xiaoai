@@ -3,10 +3,19 @@ use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, Semaphore};
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
+
+// If no frame (data, ping, or pong) arrives within READ_TIMEOUT, send a Ping.
+// After MAX_IDLE_TIMEOUTS consecutive silent windows we declare the link dead
+// so the outer run() loop can reconnect and watchdog can recover the process.
+// Server (Python `websockets`) defaults to 20s ping interval, so 30s is a
+// generous read window under healthy conditions.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_IDLE_TIMEOUTS: u32 = 2;
 
 use super::rpc::RPC;
 use crate::base::AppError;
@@ -121,15 +130,43 @@ impl MessageManager {
             return Err("WebSocket reader is not initialized".into());
         }
 
+        let mut idle_timeouts: u32 = 0;
+
         loop {
-            let next_msg = {
+            let read_result = {
                 let mut reader = self.reader.lock().await;
                 match reader.as_mut() {
                     None => break,
-                    Some(WsReader::Client(reader)) => reader.next().await,
-                    Some(WsReader::Server(reader)) => reader.next().await,
+                    Some(WsReader::Client(reader)) => {
+                        tokio::time::timeout(READ_TIMEOUT, reader.next()).await
+                    }
+                    Some(WsReader::Server(reader)) => {
+                        tokio::time::timeout(READ_TIMEOUT, reader.next()).await
+                    }
                 }
             };
+
+            let next_msg = match read_result {
+                Ok(msg) => msg,
+                Err(_) => {
+                    idle_timeouts += 1;
+                    if idle_timeouts >= MAX_IDLE_TIMEOUTS {
+                        return Err(format!(
+                            "WebSocket idle for {}s, declaring connection dead",
+                            READ_TIMEOUT.as_secs() * idle_timeouts as u64
+                        )
+                        .into());
+                    }
+                    if let Err(e) = self.send(Message::Ping(Default::default())).await {
+                        return Err(format!("keepalive ping failed: {}", e).into());
+                    }
+                    continue;
+                }
+            };
+
+            // Any frame (Text/Binary/Ping/Pong) counts as proof of life.
+            idle_timeouts = 0;
+
             match next_msg {
                 None => break,
                 Some(Ok(Message::Close(_))) => break,

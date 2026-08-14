@@ -35,6 +35,14 @@ fn is_factory_ai_query(text: &str) -> bool {
     PATTERNS.iter().any(|p| text.contains(p))
 }
 
+/// Custom wake words that bypass factory ASR intent classification entirely
+/// and always route to our own AI brain.
+const CUSTOM_WAKE_WORDS: &[&str] = &["小虎同学", "小虎儿同学"];
+
+fn is_custom_wake_word(keyword: &str) -> bool {
+    CUSTOM_WAKE_WORDS.contains(&keyword)
+}
+
 struct AppClient {
     kws_monitor: KwsMonitor,
     instruction_monitor: InstructionMonitor,
@@ -299,6 +307,29 @@ async fn on_stream(stream: Stream) -> Result<(), AppError> {
         let _ = AudioPlayer::instance().play(bytes).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_custom_wake_word_matches_both_phrases() {
+        assert!(is_custom_wake_word("小虎同学"));
+        assert!(is_custom_wake_word("小虎儿同学"));
+    }
+
+    #[test]
+    fn test_is_custom_wake_word_rejects_factory_wake_word() {
+        assert!(!is_custom_wake_word("小爱同学"));
+    }
+
+    #[test]
+    fn test_is_custom_wake_word_rejects_unrelated_text() {
+        assert!(!is_custom_wake_word(""));
+        assert!(!is_custom_wake_word("天气怎么样"));
+        assert!(!is_custom_wake_word("小虎"));
+    }
 }
 
 #[tokio::main]

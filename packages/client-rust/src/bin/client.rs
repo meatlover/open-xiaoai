@@ -292,6 +292,18 @@ impl AppClient {
 
                     if let KwsMonitorEvent::Keyword(ref keyword) = event {
                         if is_custom_wake_word(keyword) {
+                            // Pause factory's playback path immediately, before anything else in
+                            // this branch — every prior step (AudioPlayer stop, the WS interrupt
+                            // send, the factory-mediaplayer-stop call) adds latency before this
+                            // otherwise would run, giving factory's own audio a small head start.
+                            // Live testing showed this reduced (but did not eliminate) a residual
+                            // bleed-through window even with pause already running before the
+                            // pnshelper trigger fires — moving it first shaves off whatever
+                            // cumulative delay those other steps introduced.
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "mphelper pause"
+                            ).await;
+
                             println!("🐯 Custom wake word: {}", keyword);
 
                             // Interrupt any in-progress playback (brain or
@@ -312,42 +324,6 @@ impl AppClient {
                             // gate so its own spoken response never plays.
                             let _ = open_xiaoai::utils::shell::run_shell(
                                 "amixer -c 0 set factorygatevol 0 2>/dev/null"
-                            ).await;
-
-                            // Factory runs its own complete ASR→NLP→TTS cycle
-                            // in parallel with ours, on its own cloud-latency
-                            // timeline we don't control, and independently
-                            // attempts to speak its own (differently-worded)
-                            // answer. Several mute/reset-based suppression
-                            // attempts (factorygatevol=0, mysoftvol=0,
-                            // set_player_quiet, a plain guard loop, and
-                            // "让我想想" TTS + guard loop copied from this
-                            // codebase's git history) all proved insufficient
-                            // or actively harmful when tested live — see
-                            // docs/device-changes.md for the full history.
-                            //
-                            // The actual fix, found by reading further back
-                            // in that same git history: this project already
-                            // solved this exact problem once before and
-                            // documented the solution explicitly (commit
-                            // c9abc96, "fix: revert to mphelper pause +
-                            // server-side 让我想想 playback" — "The guard
-                            // loop with mediaplayer player_reset was
-                            // unreliable"). `mphelper pause`/`mphelper play`
-                            // (see packages/client-rust/src/services/
-                            // speaker.rs for the existing wrapper, used
-                            // elsewhere in this codebase) is a local,
-                            // instant mute with no round-trip lag — and per
-                            // that same commit's own comment, it does not
-                            // affect our own brain audio (played via aplay/
-                            // direct ALSA), only factory's mediaplayer-based
-                            // output. Pause immediately, before the trigger
-                            // below fires and before factory has anything to
-                            // play yet, then hold it for a few seconds to
-                            // cover factory's typical round-trip, then
-                            // restore.
-                            let _ = open_xiaoai::utils::shell::run_shell(
-                                "mphelper pause"
                             ).await;
 
                             // Acknowledgment sound — plays immediately, using

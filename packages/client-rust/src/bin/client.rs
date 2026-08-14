@@ -181,6 +181,20 @@ impl AppClient {
 
                     // Check if this is an ASR final result and send to AI-Brain
                     if let Some(text) = extract_asr_text(&json!(event)) {
+                        // Consume and clear the kws-triggered flag unconditionally,
+                        // for every ASR final this handler observes — including ones
+                        // the debounce check below discards as duplicates. Clearing
+                        // it here (before the debounce early-return) prevents a
+                        // debounced kws-triggered result from leaving a stale `true`
+                        // that would misroute a later, unrelated real 小爱同学
+                        // utterance to the brain.
+                        let from_kws = {
+                            let mut flag = kws_triggered_clone.lock().await;
+                            let was_set = *flag;
+                            *flag = false;
+                            was_set
+                        };
+
                         // Debounce: skip duplicate ASR finals within 2s
                         let mut last = last_asr.lock().await;
                         if last.elapsed() < Duration::from_secs(2) {
@@ -211,13 +225,6 @@ impl AppClient {
                         let _ = open_xiaoai::utils::shell::run_shell(
                             "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
                         ).await;
-
-                        let from_kws = {
-                            let mut flag = kws_triggered_clone.lock().await;
-                            let was_set = *flag;
-                            *flag = false;
-                            was_set
-                        };
 
                         if !from_kws && is_factory_ai_query(&text) {
                             // Real 小爱同学 wake, simple query → open factory

@@ -321,9 +321,9 @@ impl AppClient {
                             // even with this call already running first) —
                             // hammer it for the first ~500ms, covering the
                             // observed gap with margin. Does not change the
-                            // event-driven unpause from fix round 6, which
-                            // still reacts to the real Dialog.Finish signal
-                            // independently of this short-lived loop.
+                            // event-driven unpause (fix round 9), which
+                            // reacts to the real Dialog::onTtsFinish! signal
+                            // (via syslog) independently of this short-lived loop.
                             tokio::spawn(async {
                                 for _ in 0..10 {
                                     tokio::time::sleep(Duration::from_millis(50)).await;

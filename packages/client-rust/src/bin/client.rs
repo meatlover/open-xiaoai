@@ -57,6 +57,12 @@ struct AppClient {
     /// Dialog.Finish signal (not a guessed timeout — factory's cloud
     /// round-trip latency is highly variable).
     mphelper_paused: Arc<Mutex<bool>>,
+    /// Set true when the syslog watcher sees the real answer's
+    /// speech_synthesizer marker for the current paused cycle. Gates the
+    /// syslog unpause so it can't fire on the spurious Dialog::onTtsFinish!
+    /// that our own wake-time interrupt (mediaplayer stop) triggers as a
+    /// side effect, ~5s before the real one (confirmed live via syslog).
+    answer_synthesis_started: Arc<Mutex<bool>>,
     /// Watches /var/log/messages for the real Dialog::onTtsFinish! line —
     /// the actual acoustic-completion signal, distinct from and later than
     /// Dialog.Finish in instruction.log (confirmed live: ~306ms later).
@@ -72,6 +78,7 @@ impl AppClient {
             session_id: Arc::new(Mutex::new(new_session_id())),
             kws_triggered: Arc::new(Mutex::new(false)),
             mphelper_paused: Arc::new(Mutex::new(false)),
+            answer_synthesis_started: Arc::new(Mutex::new(false)),
             syslog_monitor: FileMonitor::new(),
         }
     }
@@ -266,21 +273,40 @@ impl AppClient {
             .await;
 
         let mphelper_paused_syslog_clone = Arc::clone(&self.mphelper_paused);
+        let answer_synthesis_started_syslog_clone = Arc::clone(&self.answer_synthesis_started);
         self.syslog_monitor
             .start("/var/log/messages", move |event| {
                 let mphelper_paused_syslog_clone = Arc::clone(&mphelper_paused_syslog_clone);
+                let answer_synthesis_started_syslog_clone =
+                    Arc::clone(&answer_synthesis_started_syslog_clone);
                 async move {
                     if let FileMonitorEvent::NewLine(ref line) = event {
+                        // Marks the moment the real answer's TTS content has
+                        // been generated — logged exactly once per dialog
+                        // cycle, always after the spurious cancel-triggered
+                        // Dialog::onTtsFinish! and always before the real
+                        // one (confirmed live across 6 dialog cycles).
+                        if line.contains("speech_synthesizer.dialog_id=") {
+                            *answer_synthesis_started_syslog_clone.lock().await = true;
+                        }
+
                         // The real acoustic-completion signal — factory's
-                        // TTS audio has actually finished playing. Distinct
-                        // from and later than Dialog.Finish in
-                        // instruction.log (confirmed live: ~306ms later).
+                        // TTS audio has actually finished playing. Only
+                        // honored once the marker above has been seen for
+                        // this cycle, since our own wake-time mediaplayer
+                        // stop triggers a spurious Dialog::onTtsFinish!
+                        // within ~30ms of every wake, well before any real
+                        // answer exists (confirmed live via syslog).
                         if line.contains("Dialog::onTtsFinish!") {
-                            let mut paused = mphelper_paused_syslog_clone.lock().await;
-                            if *paused {
-                                *paused = false;
-                                drop(paused);
-                                let _ = open_xiaoai::utils::shell::run_shell("mphelper play").await;
+                            let started = *answer_synthesis_started_syslog_clone.lock().await;
+                            if started {
+                                let mut paused = mphelper_paused_syslog_clone.lock().await;
+                                if *paused {
+                                    *paused = false;
+                                    drop(paused);
+                                    *answer_synthesis_started_syslog_clone.lock().await = false;
+                                    let _ = open_xiaoai::utils::shell::run_shell("mphelper play").await;
+                                }
                             }
                         }
                     }
@@ -291,10 +317,12 @@ impl AppClient {
 
         let kws_triggered_clone = Arc::clone(&self.kws_triggered);
         let mphelper_paused_clone = Arc::clone(&self.mphelper_paused);
+        let answer_synthesis_started_clone = Arc::clone(&self.answer_synthesis_started);
         self.kws_monitor
             .start(move |event| {
                 let kws_triggered_clone = Arc::clone(&kws_triggered_clone);
                 let mphelper_paused_clone = Arc::clone(&mphelper_paused_clone);
+                let answer_synthesis_started_clone = Arc::clone(&answer_synthesis_started_clone);
                 async move {
                     // Forward the raw event for observability (existing behavior).
                     MessageManager::instance()
@@ -366,6 +394,7 @@ impl AppClient {
                             // (Task 4 consumes and clears this).
                             *kws_triggered_clone.lock().await = true;
                             *mphelper_paused_clone.lock().await = true;
+                            *answer_synthesis_started_clone.lock().await = false;
 
                             // Trigger a real factory ASR cycle without the
                             // real wake word.

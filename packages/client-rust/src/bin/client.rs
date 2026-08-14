@@ -306,6 +306,17 @@ impl AppClient {
                                     drop(paused);
                                     *answer_synthesis_started_syslog_clone.lock().await = false;
                                     let _ = open_xiaoai::utils::shell::run_shell("mphelper play").await;
+                                    // Restore factory's ALSA gain to the
+                                    // current volume level (mirrors
+                                    // VolumeControl::set_volume's existing
+                                    // notifyvol/mysoftvol split) — undoes
+                                    // Step 1's mute for the next real 小爱
+                                    // 同学 wake.
+                                    let vol = VolumeControl::instance().get_volume().await;
+                                    let _ = open_xiaoai::utils::shell::run_shell(&format!(
+                                        "amixer -c 0 set mysoftvol {} 2>/dev/null",
+                                        vol
+                                    )).await;
                                 }
                             }
                         }
@@ -396,10 +407,25 @@ impl AppClient {
                                 "ubus -t 1 call mediaplayer player_play_operation '{\"action\":\"stop\"}' 2>/dev/null"
                             ).await;
 
-                            // Always route to brain: close factory's audio
-                            // gate so its own spoken response never plays.
+                            // Always route to brain: mute factory's ALSA
+                            // playback path so its own spoken response
+                            // never plays. mysoftvol (not factorygatevol,
+                            // which doesn't exist as a real ALSA control on
+                            // this device — confirmed live, every prior
+                            // call to it silently failed) is the real gate:
+                            // /etc/asound.conf routes pcm.!default (factory)
+                            // through a softvol control named "mysoftvol"
+                            // before the shared dmixer, while our own
+                            // aplay -D notify path uses an independent
+                            // softvol ("notifyvol") — muting mysoftvol
+                            // can't affect our own playback. Also, unlike
+                            // mphelper pause, this is a persistent ALSA
+                            // mixer value, not app-level playback state, so
+                            // it isn't reset by mediaplayer's internal
+                            // pause/unpause dance when it opens a new track
+                            // (fix round 11's finding).
                             let _ = open_xiaoai::utils::shell::run_shell(
-                                "amixer -c 0 set factorygatevol 0 2>/dev/null"
+                                "amixer -c 0 set mysoftvol 0 2>/dev/null"
                             ).await;
 
                             // Acknowledgment sound — plays immediately, using

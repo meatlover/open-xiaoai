@@ -52,9 +52,14 @@ impl VolumeControl {
         // Sync all volume controls and volume.cfg
         self.set_volume(vol).await;
         println!("🔊 Initial volume: {}", vol);
-        // Close factory gate by default (brain mode). Create the control first
-        // by playing a silent frame through the default PCM.
-        let _ = run_shell("aplay -d 0 /dev/null 2>/dev/null; amixer -c 0 set factorygatevol 0 2>/dev/null").await;
+        // Create the default PCM control by playing a silent frame through
+        // it (needed for the softvol controls below it to initialize). Do
+        // NOT attempt to gate factory here — factorygatevol is not a real
+        // ALSA control on this device (confirmed live: amixer errors
+        // "Unable to find simple control 'factorygatevol',0"); it never
+        // worked. Muting factory's real control, mysoftvol, is handled
+        // per-cycle by the kws handler instead, not permanently at init.
+        let _ = run_shell("aplay -d 0 /dev/null 2>/dev/null").await;
     }
 
     pub async fn get_volume(&self) -> i32 {

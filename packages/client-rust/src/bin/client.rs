@@ -302,6 +302,33 @@ impl AppClient {
                             let _ = open_xiaoai::utils::shell::run_shell(
                                 "ubus -t 1 call pnshelper event_notify '{\"src\":1,\"event\":0}' 2>/dev/null"
                             ).await;
+
+                            // Factory runs its own complete ASR→NLP→TTS cycle
+                            // in parallel with ours, on its own cloud-latency
+                            // timeline we don't control — factorygatevol=0
+                            // only mutes volume, it doesn't stop factory from
+                            // generating and attempting to speak, so a quiet
+                            // bleed-through of factory's own (differently-
+                            // worded) answer can follow ours. This is the
+                            // same problem the existing "让我想想" filler-
+                            // response flow already solved (see git history:
+                            // commit e3c3cba, "fix: guard loop to reliably
+                            // suppress firmware TTS response") — reuse the
+                            // exact same proven pattern: repeatedly kill
+                            // mediaplayer for 5s to catch it regardless of
+                            // exactly when it starts. player_reset (not
+                            // player_play_operation stop) is the call that
+                            // actually works here — confirmed empirically
+                            // during Task 5 verification that a single stop
+                            // call, correctly timed, is not sufficient.
+                            tokio::spawn(async move {
+                                for _ in 0..10 {
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    let _ = open_xiaoai::utils::shell::run_shell(
+                                        "ubus -t 1 call mediaplayer player_reset 2>/dev/null"
+                                    ).await;
+                                }
+                            });
                         }
                     }
 

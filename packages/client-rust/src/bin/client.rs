@@ -160,10 +160,12 @@ impl AppClient {
 
         let session_id_clone = Arc::clone(&self.session_id);
         let last_asr = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
+        let kws_triggered_clone = Arc::clone(&self.kws_triggered);
         self.instruction_monitor
             .start(move |event| {
                 let session_id_clone = Arc::clone(&session_id_clone);
                 let last_asr = Arc::clone(&last_asr);
+                let kws_triggered_clone = Arc::clone(&kws_triggered_clone);
                 async move {
                     // Log firmware TTS attempts for debugging
                     if let FileMonitorEvent::NewLine(ref line) = event {
@@ -210,14 +212,27 @@ impl AppClient {
                             "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
                         ).await;
 
-                        if is_factory_ai_query(&text) {
-                            // Simple query → open factory gate, let factory AI answer
+                        let from_kws = {
+                            let mut flag = kws_triggered_clone.lock().await;
+                            let was_set = *flag;
+                            *flag = false;
+                            was_set
+                        };
+
+                        if !from_kws && is_factory_ai_query(&text) {
+                            // Real 小爱同学 wake, simple query → open factory
+                            // gate, let factory AI answer.
                             println!("🏭 Factory AI query: {}", text);
                             let _ = open_xiaoai::utils::shell::run_shell(
                                 "amixer -c 0 set factorygatevol 255 2>/dev/null"
                             ).await;
                         } else {
-                            // Complex query → close factory gate, send to brain
+                            // Real 小爱同学 wake with a complex query, OR any
+                            // kws-triggered utterance → close factory gate,
+                            // send to brain.
+                            if from_kws {
+                                println!("🐯 Custom wake word query: {}", text);
+                            }
                             let _ = open_xiaoai::utils::shell::run_shell(
                                 "amixer -c 0 set factorygatevol 0 2>/dev/null"
                             ).await;

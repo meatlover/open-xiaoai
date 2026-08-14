@@ -355,15 +355,18 @@ impl AppClient {
                             ).await;
 
                             // Hedge against mediaplayer's own internal
-                            // pause/unpause dance when it opens factory's
-                            // answer as a new track, which silently undoes
-                            // a one-shot pause (confirmed live via syslog:
+                            // per-track reset, which silently undoes both a
+                            // one-shot pause (confirmed live via syslog:
                             // PauseDummy(1) immediately followed by
-                            // PauseDummy(0), ~15ms apart, well after any
-                            // fixed-duration burst would have ended).
-                            // Re-assert every 100ms until the real
-                            // completion signal (fix round 10's syslog
-                            // watcher) flips mphelper_paused false.
+                            // PauseDummy(0), ~15ms apart) and a one-shot
+                            // mysoftvol mute (confirmed live: mediaplayer's
+                            // own AUDIO_VOLUME_SET writes mysoftvol's
+                            // resting value back ~190ms after our mute,
+                            // fix round 12's finding) — both happen well
+                            // after any fixed-duration burst would have
+                            // ended. Re-assert both every 100ms until the
+                            // real completion signal (fix round 10's
+                            // syslog watcher) flips mphelper_paused false.
                             let hammer_paused_clone = Arc::clone(&mphelper_paused_clone);
                             tokio::spawn(async move {
                                 // Keep re-asserting the pause for as long as
@@ -386,7 +389,7 @@ impl AppClient {
                                         break;
                                     }
                                     let _ = open_xiaoai::utils::shell::run_shell(
-                                        "mphelper pause"
+                                        "mphelper pause; amixer -c 0 set mysoftvol 0 2>/dev/null"
                                     ).await;
                                 }
                             });

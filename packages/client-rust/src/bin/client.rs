@@ -288,26 +288,6 @@ impl AppClient {
                                 "amixer -c 0 set factorygatevol 0 2>/dev/null"
                             ).await;
 
-                            // Factory's own response can be near-instant
-                            // (confirmed live: a full short reply can play
-                            // start-to-finish within 500ms) — factorygatevol
-                            // alone is not enough, and even a fast reset
-                            // loop has an unprotected gap if it waits before
-                            // its first tick. Proactively zero mysoftvol
-                            // (the actual channel factory's audio plays
-                            // through) right now, before the trigger below
-                            // fires and before factory has anything to play
-                            // yet — this closes the gap the gate alone left
-                            // open.
-                            let _ = open_xiaoai::utils::shell::run_shell(
-                                "amixer -c 0 set mysoftvol 0 2>/dev/null"
-                            ).await;
-
-                            // Acknowledgment sound.
-                            let _ = open_xiaoai::utils::shell::run_shell(
-                                "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
-                            ).await;
-
                             // Mark the next ASR result as kws-originated
                             // (Task 4 consumes and clears this).
                             *kws_triggered_clone.lock().await = true;
@@ -320,33 +300,38 @@ impl AppClient {
 
                             // Factory runs its own complete ASR→NLP→TTS cycle
                             // in parallel with ours, on its own cloud-latency
-                            // timeline we don't control. The mysoftvol=0
-                            // mute above handles the common case; this guard
-                            // loop is defense in depth for anything that
-                            // slips past it (e.g. a stray volume reset from
-                            // elsewhere in the firmware). Reuses the pattern
-                            // already proven in this codebase for the same
-                            // class of problem (see git history: commit
-                            // e3c3cba, "fix: guard loop to reliably suppress
-                            // firmware TTS response"), tightened after live
-                            // testing showed the original 500ms-delay-first
-                            // version let a full short reply play before its
-                            // first tick: reset immediately (no initial
-                            // sleep), then every 150ms for ~3s. Restores
-                            // mysoftvol to the current volume level
-                            // afterward so factory isn't left muted for a
-                            // later genuine 小爱同学 wake.
+                            // timeline we don't control, and independently
+                            // attempts to speak its own (differently-worded)
+                            // answer. Several mute/reset-based suppression
+                            // attempts (factorygatevol=0, mysoftvol=0,
+                            // set_player_quiet, a plain guard loop) all
+                            // proved insufficient or actively harmful when
+                            // tested live — see docs/device-changes.md for
+                            // the full history.
+                            //
+                            // Instead, reuse the exact pattern this codebase
+                            // already ships for the analogous real-小爱同学
+                            // "complex query" case (git history: commit
+                            // a75fc85, "feat: mute firmware audio on ASR and
+                            // improve brain server", and commit e3c3cba,
+                            // "fix: guard loop to reliably suppress firmware
+                            // TTS response"): play "让我想想" via mibrain's
+                            // own TTS immediately — this doubles as the
+                            // audible wake acknowledgment (replacing the
+                            // notice.wav chime) — then, once that finishes,
+                            // repeatedly kill mediaplayer to catch factory's
+                            // own answer regardless of timing.
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "ubus call mibrain text_to_speech '{\"text\":\"让我想想\",\"save\":0,\"play\":1}'"
+                            ).await;
                             tokio::spawn(async move {
-                                for _ in 0..20 {
+                                tokio::time::sleep(Duration::from_millis(1500)).await;
+                                for _ in 0..10 {
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
                                     let _ = open_xiaoai::utils::shell::run_shell(
-                                        "ubus -t 1 call mediaplayer player_reset 2>/dev/null"
+                                        "ubus call mediaplayer player_reset"
                                     ).await;
-                                    tokio::time::sleep(Duration::from_millis(150)).await;
                                 }
-                                let vol = VolumeControl::instance().get_volume().await;
-                                let _ = open_xiaoai::utils::shell::run_shell(
-                                    &format!("amixer -c 0 set mysoftvol {} 2>/dev/null", vol)
-                                ).await;
                             });
                         }
                     }

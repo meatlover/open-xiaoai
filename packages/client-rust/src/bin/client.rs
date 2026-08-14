@@ -288,6 +288,49 @@ impl AppClient {
                                 "amixer -c 0 set factorygatevol 0 2>/dev/null"
                             ).await;
 
+                            // Factory runs its own complete ASR→NLP→TTS cycle
+                            // in parallel with ours, on its own cloud-latency
+                            // timeline we don't control, and independently
+                            // attempts to speak its own (differently-worded)
+                            // answer. Several mute/reset-based suppression
+                            // attempts (factorygatevol=0, mysoftvol=0,
+                            // set_player_quiet, a plain guard loop, and
+                            // "让我想想" TTS + guard loop copied from this
+                            // codebase's git history) all proved insufficient
+                            // or actively harmful when tested live — see
+                            // docs/device-changes.md for the full history.
+                            //
+                            // The actual fix, found by reading further back
+                            // in that same git history: this project already
+                            // solved this exact problem once before and
+                            // documented the solution explicitly (commit
+                            // c9abc96, "fix: revert to mphelper pause +
+                            // server-side 让我想想 playback" — "The guard
+                            // loop with mediaplayer player_reset was
+                            // unreliable"). `mphelper pause`/`mphelper play`
+                            // (see packages/client-rust/src/services/
+                            // speaker.rs for the existing wrapper, used
+                            // elsewhere in this codebase) is a local,
+                            // instant mute with no round-trip lag — and per
+                            // that same commit's own comment, it does not
+                            // affect our own brain audio (played via aplay/
+                            // direct ALSA), only factory's mediaplayer-based
+                            // output. Pause immediately, before the trigger
+                            // below fires and before factory has anything to
+                            // play yet, then hold it for a few seconds to
+                            // cover factory's typical round-trip, then
+                            // restore.
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "mphelper pause"
+                            ).await;
+
+                            // Acknowledgment sound — plays immediately, using
+                            // our own aplay/notify path, unaffected by the
+                            // mphelper pause above.
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
+                            ).await;
+
                             // Mark the next ASR result as kws-originated
                             // (Task 4 consumes and clears this).
                             *kws_triggered_clone.lock().await = true;
@@ -298,40 +341,15 @@ impl AppClient {
                                 "ubus -t 1 call pnshelper event_notify '{\"src\":1,\"event\":0}' 2>/dev/null"
                             ).await;
 
-                            // Factory runs its own complete ASR→NLP→TTS cycle
-                            // in parallel with ours, on its own cloud-latency
-                            // timeline we don't control, and independently
-                            // attempts to speak its own (differently-worded)
-                            // answer. Several mute/reset-based suppression
-                            // attempts (factorygatevol=0, mysoftvol=0,
-                            // set_player_quiet, a plain guard loop) all
-                            // proved insufficient or actively harmful when
-                            // tested live — see docs/device-changes.md for
-                            // the full history.
-                            //
-                            // Instead, reuse the exact pattern this codebase
-                            // already ships for the analogous real-小爱同学
-                            // "complex query" case (git history: commit
-                            // a75fc85, "feat: mute firmware audio on ASR and
-                            // improve brain server", and commit e3c3cba,
-                            // "fix: guard loop to reliably suppress firmware
-                            // TTS response"): play "让我想想" via mibrain's
-                            // own TTS immediately — this doubles as the
-                            // audible wake acknowledgment (replacing the
-                            // notice.wav chime) — then, once that finishes,
-                            // repeatedly kill mediaplayer to catch factory's
-                            // own answer regardless of timing.
-                            let _ = open_xiaoai::utils::shell::run_shell(
-                                "ubus call mibrain text_to_speech '{\"text\":\"让我想想\",\"save\":0,\"play\":1}'"
-                            ).await;
+                            // Hold the pause for 5s (matching the total
+                            // window previous guard-loop attempts targeted),
+                            // then restore normal playback for future
+                            // genuine 小爱同学 wakes.
                             tokio::spawn(async move {
-                                tokio::time::sleep(Duration::from_millis(1500)).await;
-                                for _ in 0..10 {
-                                    tokio::time::sleep(Duration::from_millis(500)).await;
-                                    let _ = open_xiaoai::utils::shell::run_shell(
-                                        "ubus call mediaplayer player_reset"
-                                    ).await;
-                                }
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                let _ = open_xiaoai::utils::shell::run_shell(
+                                    "mphelper play"
+                                ).await;
                             });
                         }
                     }

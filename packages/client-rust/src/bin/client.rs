@@ -1,7 +1,7 @@
 use open_xiaoai::services::ai_brain::{extract_asr_text, new_session_id, send_user_input};
 use open_xiaoai::services::audio::config::AudioConfig;
 use open_xiaoai::services::monitor::file::FileMonitorEvent;
-use open_xiaoai::services::monitor::kws::KwsMonitor;
+use open_xiaoai::services::monitor::kws::{KwsMonitor, KwsMonitorEvent};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,6 +48,10 @@ struct AppClient {
     instruction_monitor: InstructionMonitor,
     button_monitor: ButtonMonitor,
     session_id: Arc<Mutex<String>>,
+    /// Set true when a custom wake word (小虎同学/小虎儿同学) fires a
+    /// synthetic ASR trigger. The next ASR final result consumes and
+    /// clears this flag to skip factory-intent routing (Task 4).
+    kws_triggered: Arc<Mutex<bool>>,
 }
 
 impl AppClient {
@@ -57,6 +61,7 @@ impl AppClient {
             instruction_monitor: InstructionMonitor::new(),
             button_monitor: ButtonMonitor::new(),
             session_id: Arc::new(Mutex::new(new_session_id())),
+            kws_triggered: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -227,11 +232,59 @@ impl AppClient {
             })
             .await;
 
+        let kws_triggered_clone = Arc::clone(&self.kws_triggered);
         self.kws_monitor
-            .start(|event| async move {
-                MessageManager::instance()
-                    .send_event("kws", Some(json!(event)))
-                    .await
+            .start(move |event| {
+                let kws_triggered_clone = Arc::clone(&kws_triggered_clone);
+                async move {
+                    // Forward the raw event for observability (existing behavior).
+                    MessageManager::instance()
+                        .send_event("kws", Some(json!(event)))
+                        .await?;
+
+                    if let KwsMonitorEvent::Keyword(ref keyword) = event {
+                        if is_custom_wake_word(keyword) {
+                            println!("🐯 Custom wake word: {}", keyword);
+
+                            // Interrupt any in-progress playback (brain or
+                            // factory), mirroring the existing ASR-final
+                            // interrupt behavior below.
+                            let _ = AudioPlayer::instance().stop().await;
+                            let interrupt_msg = json!({"type": "interrupt"});
+                            let _ = MessageManager::instance()
+                                .send(tokio_tungstenite::tungstenite::Message::Text(
+                                    interrupt_msg.to_string().into(),
+                                ))
+                                .await;
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "ubus -t 1 call mediaplayer player_play_operation '{\"action\":\"stop\"}' 2>/dev/null"
+                            ).await;
+
+                            // Always route to brain: close factory's audio
+                            // gate so its own spoken response never plays.
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "amixer -c 0 set factorygatevol 0 2>/dev/null"
+                            ).await;
+
+                            // Acknowledgment sound.
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
+                            ).await;
+
+                            // Mark the next ASR result as kws-originated
+                            // (Task 4 consumes and clears this).
+                            *kws_triggered_clone.lock().await = true;
+
+                            // Trigger a real factory ASR cycle without the
+                            // real wake word.
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "ubus -t 1 call pnshelper event_notify '{\"src\":1,\"event\":0}' 2>/dev/null"
+                            ).await;
+                        }
+                    }
+
+                    Ok(())
+                }
             })
             .await;
 

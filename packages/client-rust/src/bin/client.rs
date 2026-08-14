@@ -1,6 +1,6 @@
 use open_xiaoai::services::ai_brain::{extract_asr_text, new_session_id, send_user_input};
 use open_xiaoai::services::audio::config::AudioConfig;
-use open_xiaoai::services::monitor::file::FileMonitorEvent;
+use open_xiaoai::services::monitor::file::{FileMonitor, FileMonitorEvent};
 use open_xiaoai::services::monitor::kws::{KwsMonitor, KwsMonitorEvent};
 use serde_json::json;
 use std::sync::Arc;
@@ -57,6 +57,10 @@ struct AppClient {
     /// Dialog.Finish signal (not a guessed timeout — factory's cloud
     /// round-trip latency is highly variable).
     mphelper_paused: Arc<Mutex<bool>>,
+    /// Watches /var/log/messages for the real Dialog::onTtsFinish! line —
+    /// the actual acoustic-completion signal, distinct from and later than
+    /// Dialog.Finish in instruction.log (confirmed live: ~306ms later).
+    syslog_monitor: FileMonitor,
 }
 
 impl AppClient {
@@ -68,6 +72,7 @@ impl AppClient {
             session_id: Arc::new(Mutex::new(new_session_id())),
             kws_triggered: Arc::new(Mutex::new(false)),
             mphelper_paused: Arc::new(Mutex::new(false)),
+            syslog_monitor: FileMonitor::new(),
         }
     }
 
@@ -167,34 +172,16 @@ impl AppClient {
         let session_id_clone = Arc::clone(&self.session_id);
         let last_asr = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
         let kws_triggered_clone = Arc::clone(&self.kws_triggered);
-        let mphelper_paused_clone = Arc::clone(&self.mphelper_paused);
         self.instruction_monitor
             .start(move |event| {
                 let session_id_clone = Arc::clone(&session_id_clone);
                 let last_asr = Arc::clone(&last_asr);
                 let kws_triggered_clone = Arc::clone(&kws_triggered_clone);
-                let mphelper_paused_clone = Arc::clone(&mphelper_paused_clone);
                 async move {
                     // Log firmware TTS attempts for debugging
                     if let FileMonitorEvent::NewLine(ref line) = event {
                         if line.contains("\"namespace\":\"SpeechSynthesizer\"") {
                             eprintln!("📡 Firmware TTS: {}", line);
-                        }
-                        // Factory's dialog cycle (real 小爱同学 or our
-                        // synthetic kws trigger) has fully completed,
-                        // including any TTS it decided to speak. If we
-                        // paused mphelper for a kws-triggered cycle, this is
-                        // the reliable signal to unpause — not a guessed
-                        // duration, since factory's real cloud round-trip
-                        // latency is highly variable (confirmed live,
-                        // anywhere from ~2s to ~19s).
-                        if line.contains("\"namespace\":\"Dialog\"") && line.contains("\"name\":\"Finish\"") {
-                            let mut paused = mphelper_paused_clone.lock().await;
-                            if *paused {
-                                *paused = false;
-                                drop(paused);
-                                let _ = open_xiaoai::utils::shell::run_shell("mphelper play").await;
-                            }
                         }
                     }
 
@@ -273,6 +260,30 @@ impl AppClient {
                         }
                     }
 
+                    Ok(())
+                }
+            })
+            .await;
+
+        let mphelper_paused_syslog_clone = Arc::clone(&self.mphelper_paused);
+        self.syslog_monitor
+            .start("/var/log/messages", move |event| {
+                let mphelper_paused_syslog_clone = Arc::clone(&mphelper_paused_syslog_clone);
+                async move {
+                    if let FileMonitorEvent::NewLine(ref line) = event {
+                        // The real acoustic-completion signal — factory's
+                        // TTS audio has actually finished playing. Distinct
+                        // from and later than Dialog.Finish in
+                        // instruction.log (confirmed live: ~306ms later).
+                        if line.contains("Dialog::onTtsFinish!") {
+                            let mut paused = mphelper_paused_syslog_clone.lock().await;
+                            if *paused {
+                                *paused = false;
+                                drop(paused);
+                                let _ = open_xiaoai::utils::shell::run_shell("mphelper play").await;
+                            }
+                        }
+                    }
                     Ok(())
                 }
             })
@@ -378,6 +389,7 @@ impl AppClient {
         self.instruction_monitor.stop().await;
         self.kws_monitor.stop().await;
         self.button_monitor.stop().await;
+        self.syslog_monitor.stop().await;
     }
 }
 

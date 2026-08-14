@@ -304,6 +304,24 @@ impl AppClient {
                                 "mphelper pause"
                             ).await;
 
+                            // Hedge against a single pause call not
+                            // immediately/reliably sticking (live testing
+                            // showed a ~300ms bleed-through window persist
+                            // even with this call already running first) —
+                            // hammer it for the first ~500ms, covering the
+                            // observed gap with margin. Does not change the
+                            // event-driven unpause from fix round 6, which
+                            // still reacts to the real Dialog.Finish signal
+                            // independently of this short-lived loop.
+                            tokio::spawn(async {
+                                for _ in 0..10 {
+                                    tokio::time::sleep(Duration::from_millis(50)).await;
+                                    let _ = open_xiaoai::utils::shell::run_shell(
+                                        "mphelper pause"
+                                    ).await;
+                                }
+                            });
+
                             println!("🐯 Custom wake word: {}", keyword);
 
                             // Interrupt any in-progress playback (brain or

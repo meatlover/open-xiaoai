@@ -52,6 +52,11 @@ struct AppClient {
     /// synthetic ASR trigger. The next ASR final result consumes and
     /// clears this flag to skip factory-intent routing (Task 4).
     kws_triggered: Arc<Mutex<bool>>,
+    /// Set true when the KWS handler pauses mphelper to suppress factory's
+    /// TTS. Cleared by the instruction_monitor handler on the real
+    /// Dialog.Finish signal (not a guessed timeout — factory's cloud
+    /// round-trip latency is highly variable).
+    mphelper_paused: Arc<Mutex<bool>>,
 }
 
 impl AppClient {
@@ -62,6 +67,7 @@ impl AppClient {
             button_monitor: ButtonMonitor::new(),
             session_id: Arc::new(Mutex::new(new_session_id())),
             kws_triggered: Arc::new(Mutex::new(false)),
+            mphelper_paused: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -161,16 +167,34 @@ impl AppClient {
         let session_id_clone = Arc::clone(&self.session_id);
         let last_asr = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(10)));
         let kws_triggered_clone = Arc::clone(&self.kws_triggered);
+        let mphelper_paused_clone = Arc::clone(&self.mphelper_paused);
         self.instruction_monitor
             .start(move |event| {
                 let session_id_clone = Arc::clone(&session_id_clone);
                 let last_asr = Arc::clone(&last_asr);
                 let kws_triggered_clone = Arc::clone(&kws_triggered_clone);
+                let mphelper_paused_clone = Arc::clone(&mphelper_paused_clone);
                 async move {
                     // Log firmware TTS attempts for debugging
                     if let FileMonitorEvent::NewLine(ref line) = event {
                         if line.contains("\"namespace\":\"SpeechSynthesizer\"") {
                             eprintln!("📡 Firmware TTS: {}", line);
+                        }
+                        // Factory's dialog cycle (real 小爱同学 or our
+                        // synthetic kws trigger) has fully completed,
+                        // including any TTS it decided to speak. If we
+                        // paused mphelper for a kws-triggered cycle, this is
+                        // the reliable signal to unpause — not a guessed
+                        // duration, since factory's real cloud round-trip
+                        // latency is highly variable (confirmed live,
+                        // anywhere from ~2s to ~19s).
+                        if line.contains("\"namespace\":\"Dialog\"") && line.contains("\"name\":\"Finish\"") {
+                            let mut paused = mphelper_paused_clone.lock().await;
+                            if *paused {
+                                *paused = false;
+                                drop(paused);
+                                let _ = open_xiaoai::utils::shell::run_shell("mphelper play").await;
+                            }
                         }
                     }
 
@@ -255,9 +279,11 @@ impl AppClient {
             .await;
 
         let kws_triggered_clone = Arc::clone(&self.kws_triggered);
+        let mphelper_paused_clone = Arc::clone(&self.mphelper_paused);
         self.kws_monitor
             .start(move |event| {
                 let kws_triggered_clone = Arc::clone(&kws_triggered_clone);
+                let mphelper_paused_clone = Arc::clone(&mphelper_paused_clone);
                 async move {
                     // Forward the raw event for observability (existing behavior).
                     MessageManager::instance()
@@ -334,23 +360,13 @@ impl AppClient {
                             // Mark the next ASR result as kws-originated
                             // (Task 4 consumes and clears this).
                             *kws_triggered_clone.lock().await = true;
+                            *mphelper_paused_clone.lock().await = true;
 
                             // Trigger a real factory ASR cycle without the
                             // real wake word.
                             let _ = open_xiaoai::utils::shell::run_shell(
                                 "ubus -t 1 call pnshelper event_notify '{\"src\":1,\"event\":0}' 2>/dev/null"
                             ).await;
-
-                            // Hold the pause for 5s (matching the total
-                            // window previous guard-loop attempts targeted),
-                            // then restore normal playback for future
-                            // genuine 小爱同学 wakes.
-                            tokio::spawn(async move {
-                                tokio::time::sleep(Duration::from_secs(5)).await;
-                                let _ = open_xiaoai::utils::shell::run_shell(
-                                    "mphelper play"
-                                ).await;
-                            });
                         }
                     }
 

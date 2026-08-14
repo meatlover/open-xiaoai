@@ -343,18 +343,37 @@ impl AppClient {
                                 "mphelper pause"
                             ).await;
 
-                            // Hedge against a single pause call not
-                            // immediately/reliably sticking (live testing
-                            // showed a ~300ms bleed-through window persist
-                            // even with this call already running first) —
-                            // hammer it for the first ~500ms, covering the
-                            // observed gap with margin. Does not change the
-                            // event-driven unpause (fix round 9), which
-                            // reacts to the real Dialog::onTtsFinish! signal
-                            // (via syslog) independently of this short-lived loop.
-                            tokio::spawn(async {
-                                for _ in 0..10 {
-                                    tokio::time::sleep(Duration::from_millis(50)).await;
+                            // Hedge against mediaplayer's own internal
+                            // pause/unpause dance when it opens factory's
+                            // answer as a new track, which silently undoes
+                            // a one-shot pause (confirmed live via syslog:
+                            // PauseDummy(1) immediately followed by
+                            // PauseDummy(0), ~15ms apart, well after any
+                            // fixed-duration burst would have ended).
+                            // Re-assert every 100ms until the real
+                            // completion signal (fix round 10's syslog
+                            // watcher) flips mphelper_paused false.
+                            let hammer_paused_clone = Arc::clone(&mphelper_paused_clone);
+                            tokio::spawn(async move {
+                                // Keep re-asserting the pause for as long as
+                                // mphelper_paused stays true — mediaplayer
+                                // performs its own internal pause/unpause
+                                // dance when it opens factory's answer as a
+                                // new track (confirmed live via syslog:
+                                // PauseDummy(1) immediately followed by
+                                // PauseDummy(0), ~15ms apart), which silently
+                                // undoes a one-shot pause with nobody to
+                                // re-assert it. The 300-iteration cap (30s)
+                                // is a runaway safety net only, not the
+                                // intended stopping condition — the real
+                                // stop condition is the flag going false via
+                                // the syslog watcher's real-completion
+                                // unpause.
+                                for _ in 0..300 {
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                    if !*hammer_paused_clone.lock().await {
+                                        break;
+                                    }
                                     let _ = open_xiaoai::utils::shell::run_shell(
                                         "mphelper pause"
                                     ).await;

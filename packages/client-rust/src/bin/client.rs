@@ -75,19 +75,6 @@ async fn restore_factory_audio(
     }
 }
 
-/// Check if the query should be handled by factory AI (simple daily questions).
-fn is_factory_ai_query(text: &str) -> bool {
-    const PATTERNS: &[&str] = &[
-        // Weather
-        "天气", "气温", "下雨", "下雪", "温度", "多少度", "冷不冷", "热不热",
-        // Date/Time
-        "几点", "几号", "星期几", "日期", "什么时候",
-        // Timers/Alarms
-        "闹钟", "定时", "倒计时", "提醒我",
-    ];
-    PATTERNS.iter().any(|p| text.contains(p))
-}
-
 /// Custom wake words that bypass factory ASR intent classification entirely
 /// and always route to our own AI brain.
 const CUSTOM_WAKE_WORDS: &[&str] = &["小虎同学", "小虎儿同学"];
@@ -278,46 +265,47 @@ impl AppClient {
                         let session_id = session_id_clone.lock().await.clone();
                         println!("🔥 ASR final result: {}", text);
 
-                        // Stop any current brain response (kills aplay mid-stream)
-                        let _ = AudioPlayer::instance().stop().await;
-                        // Tell server to cancel current LLM generation
-                        let interrupt_msg = json!({"type": "interrupt"});
-                        let _ = MessageManager::instance()
-                            .send(tokio_tungstenite::tungstenite::Message::Text(
-                                interrupt_msg.to_string().into(),
-                            ))
-                            .await;
-                        // Stop factory AI playback
-                        let _ = open_xiaoai::utils::shell::run_shell(
-                            "ubus -t 1 call mediaplayer player_play_operation '{\"action\":\"stop\"}' 2>/dev/null"
-                        ).await;
+                        if from_kws {
+                            // Custom wake word (小虎同学/小虎儿同学) → always
+                            // route to our own AI brain. Every real 小爱
+                            // 同学 wake, regardless of query content, is
+                            // left entirely to factory — no gate-closing,
+                            // no interception. This replaces an earlier
+                            // is_factory_ai_query keyword-list split that
+                            // routed some real-wake queries to the brain
+                            // too, using a dead factorygatevol control
+                            // that silently failed to actually suppress
+                            // factory's own independent answer — both AIs
+                            // would answer, audibly, for any real-wake
+                            // query that didn't match the simple-query
+                            // keyword list (confirmed live).
+                            println!("🐯 Custom wake word query: {}", text);
 
-                        // Play "prompt received" confirmation sound
-                        let _ = open_xiaoai::utils::shell::run_shell(
-                            "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
-                        ).await;
+                            // Stop any current brain response (kills aplay mid-stream)
+                            let _ = AudioPlayer::instance().stop().await;
+                            // Tell server to cancel current LLM generation
+                            let interrupt_msg = json!({"type": "interrupt"});
+                            let _ = MessageManager::instance()
+                                .send(tokio_tungstenite::tungstenite::Message::Text(
+                                    interrupt_msg.to_string().into(),
+                                ))
+                                .await;
+                            // Stop factory AI playback
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "ubus -t 1 call mediaplayer player_play_operation '{\"action\":\"stop\"}' 2>/dev/null"
+                            ).await;
 
-                        if !from_kws && is_factory_ai_query(&text) {
-                            // Real 小爱同学 wake, simple query → open factory
-                            // gate, let factory AI answer.
-                            println!("🏭 Factory AI query: {}", text);
+                            // Play "prompt received" confirmation sound
                             let _ = open_xiaoai::utils::shell::run_shell(
-                                "amixer -c 0 set factorygatevol 255 2>/dev/null"
+                                "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
                             ).await;
-                        } else {
-                            // Real 小爱同学 wake with a complex query, OR any
-                            // kws-triggered utterance → close factory gate,
-                            // send to brain.
-                            if from_kws {
-                                println!("🐯 Custom wake word query: {}", text);
-                            }
-                            let _ = open_xiaoai::utils::shell::run_shell(
-                                "amixer -c 0 set factorygatevol 0 2>/dev/null"
-                            ).await;
+
                             if let Err(e) = send_user_input(session_id, text).await {
                                 eprintln!("❌ Failed to send user_input: {}", e);
                             }
                         }
+                        // else: real 小爱同学 wake — a true no-op here,
+                        // factory handles it entirely on its own.
                     }
 
                     Ok(())

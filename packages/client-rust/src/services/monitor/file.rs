@@ -68,12 +68,24 @@ impl FileMonitor {
         let mut position = metadata.len();
 
         loop {
-            let metadata = reader.get_ref().metadata().await.unwrap();
-
-            let current_size = metadata.len();
-            if current_size < position {
-                position = 0;
-                let _ = on_update(FileMonitorEvent::NewFile).await;
+            // Check the PATH's current metadata, not the open handle's —
+            // a handle opened before a rename-based rotation (e.g.
+            // BusyBox syslogd rotating /var/log/messages) keeps pointing
+            // at the old, now-static file forever; its own metadata never
+            // shrinks, so the truncation check below never fires and this
+            // monitor silently goes blind to all new lines (found during
+            // final review). Reopen when the path's file looks smaller
+            // than what we've already read — covers both in-place
+            // truncation and rename-based rotation (a freshly rotated
+            // file starts empty/small).
+            if let Ok(path_metadata) = tokio::fs::metadata(file_path).await {
+                if path_metadata.len() < position {
+                    position = 0;
+                    if let Ok(new_file) = OpenOptions::new().read(true).open(file_path).await {
+                        reader = BufReader::new(new_file);
+                    }
+                    let _ = on_update(FileMonitorEvent::NewFile).await;
+                }
             }
 
             if reader.stream_position().await? != position {

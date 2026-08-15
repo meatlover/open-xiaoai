@@ -31,6 +31,50 @@ use open_xiaoai::services::volume::VolumeControl;
 static MASTER_VOL_SAVED: std::sync::LazyLock<Mutex<Option<i32>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
+/// Fully restores factory's audio state — mphelper, mysoftvol, and Master
+/// Volume — and clears the paused/answer-started flags. This is the one
+/// place that knows how to undo a kws-triggered mute; every restore path
+/// (the real completion signal, the hammer loop's timeout, dispose(), and
+/// start_play's safety backstop) goes through it. Found necessary during
+/// final review: without a single shared path, several of these left the
+/// device muted with no recovery short of a reboot. Idempotent and safe
+/// to call even when nothing is currently muted.
+async fn restore_factory_audio(
+    mphelper_paused: &Arc<Mutex<bool>>,
+    answer_synthesis_started: &Arc<Mutex<bool>>,
+) {
+    let mut paused = mphelper_paused.lock().await;
+    if *paused {
+        *paused = false;
+        drop(paused);
+        *answer_synthesis_started.lock().await = false;
+        let _ = open_xiaoai::utils::shell::run_shell("mphelper play").await;
+        // Respect the user's own mute state (VolumeControl::toggle_mute)
+        // — don't un-mute mysoftvol out from under a deliberate user
+        // mute (final review finding: the prior restore ignored this).
+        if !VolumeControl::instance().is_muted().await {
+            let vol = VolumeControl::instance().get_volume().await;
+            let _ = open_xiaoai::utils::shell::run_shell(&format!(
+                "amixer -c 0 set mysoftvol {} 2>/dev/null",
+                vol
+            )).await;
+        }
+    } else {
+        drop(paused);
+    }
+    // Master Volume is a hardware codec baseline, not the user-facing
+    // volume/mute level (that's mysoftvol/notifyvol, handled above via
+    // VolumeControl) — always restore it regardless of user mute state,
+    // since leaving it at 0 would silence ALL audio, including our own
+    // notify-path prompts, until a reboot — not just factory's.
+    if let Some(mv) = MASTER_VOL_SAVED.lock().await.take() {
+        let _ = open_xiaoai::utils::shell::run_shell(&format!(
+            "amixer -c 0 cset numid=1 {},{} 2>/dev/null",
+            mv, mv
+        )).await;
+    }
+}
+
 /// Check if the query should be handled by factory AI (simple daily questions).
 fn is_factory_ai_query(text: &str) -> bool {
     const PATTERNS: &[&str] = &[
@@ -62,8 +106,8 @@ struct AppClient {
     /// clears this flag to skip factory-intent routing (Task 4).
     kws_triggered: Arc<Mutex<bool>>,
     /// Set true when the KWS handler pauses mphelper to suppress factory's
-    /// TTS. Cleared by the instruction_monitor handler on the real
-    /// Dialog.Finish signal (not a guessed timeout — factory's cloud
+    /// TTS. Cleared by the syslog watcher on the real
+    /// Dialog::onTtsFinish! signal (not a guessed timeout — factory's cloud
     /// round-trip latency is highly variable).
     mphelper_paused: Arc<Mutex<bool>>,
     /// Set true when the syslog watcher sees the real answer's
@@ -309,34 +353,10 @@ impl AppClient {
                         if line.contains("Dialog::onTtsFinish!") {
                             let started = *answer_synthesis_started_syslog_clone.lock().await;
                             if started {
-                                let mut paused = mphelper_paused_syslog_clone.lock().await;
-                                if *paused {
-                                    *paused = false;
-                                    drop(paused);
-                                    *answer_synthesis_started_syslog_clone.lock().await = false;
-                                    let _ = open_xiaoai::utils::shell::run_shell("mphelper play").await;
-                                    // Restore factory's ALSA gain to the
-                                    // current volume level (mirrors
-                                    // VolumeControl::set_volume's existing
-                                    // notifyvol/mysoftvol split) — undoes
-                                    // Step 1's mute for the next real 小爱
-                                    // 同学 wake.
-                                    let vol = VolumeControl::instance().get_volume().await;
-                                    let _ = open_xiaoai::utils::shell::run_shell(&format!(
-                                        "amixer -c 0 set mysoftvol {} 2>/dev/null",
-                                        vol
-                                    )).await;
-                                    // Restore Master Volume (fix round 15).
-                                    // take() clears MASTER_VOL_SAVED so
-                                    // start_play's own safety-restore
-                                    // becomes a no-op if it runs after this.
-                                    if let Some(mv) = MASTER_VOL_SAVED.lock().await.take() {
-                                        let _ = open_xiaoai::utils::shell::run_shell(&format!(
-                                            "amixer -c 0 cset numid=1 {},{} 2>/dev/null",
-                                            mv, mv
-                                        )).await;
-                                    }
-                                }
+                                restore_factory_audio(
+                                    &mphelper_paused_syslog_clone,
+                                    &answer_synthesis_started_syslog_clone,
+                                ).await;
                             }
                         }
                     }
@@ -361,6 +381,18 @@ impl AppClient {
 
                     if let KwsMonitorEvent::Keyword(ref keyword) = event {
                         if is_custom_wake_word(keyword) {
+                            // Clear this before anything else below —
+                            // it can be left true by a factory dialog
+                            // unrelated to this cycle (final review
+                            // finding: it was previously cleared after
+                            // mphelper_paused was already set and after
+                            // the mediaplayer-stop interrupt had already
+                            // fired, leaving a window where a stale true
+                            // value lets the syslog watcher's
+                            // real-completion check pass immediately,
+                            // defeating the mute for the whole cycle).
+                            *answer_synthesis_started_clone.lock().await = false;
+
                             // Pause factory's playback path immediately, before anything else in
                             // this branch — every prior step (AudioPlayer stop, the WS interrupt
                             // send, the factory-mediaplayer-stop call) adds latency before this
@@ -387,6 +419,7 @@ impl AppClient {
                             // real completion signal (fix round 10's
                             // syslog watcher) flips mphelper_paused false.
                             let hammer_paused_clone = Arc::clone(&mphelper_paused_clone);
+                            let hammer_answer_started_clone = Arc::clone(&answer_synthesis_started_clone);
                             tokio::spawn(async move {
                                 // Keep re-asserting the pause for as long as
                                 // mphelper_paused stays true — mediaplayer
@@ -428,6 +461,17 @@ impl AppClient {
                                         ).await;
                                     }
                                 }
+                                // If the loop exhausted its cap without the
+                                // real completion signal ever clearing
+                                // mphelper_paused, the device would
+                                // otherwise stay muted forever — this is a
+                                // real failure mode found in final review,
+                                // not a hypothetical. Run the same restore
+                                // the real signal would have run.
+                                restore_factory_audio(
+                                    &hammer_paused_clone,
+                                    &hammer_answer_started_clone,
+                                ).await;
                             });
 
                             println!("🐯 Custom wake word: {}", keyword);
@@ -451,18 +495,22 @@ impl AppClient {
                             // never plays. mysoftvol (not factorygatevol,
                             // which doesn't exist as a real ALSA control on
                             // this device — confirmed live, every prior
-                            // call to it silently failed) is the real gate:
-                            // /etc/asound.conf routes pcm.!default (factory)
-                            // through a softvol control named "mysoftvol"
-                            // before the shared dmixer, while our own
-                            // aplay -D notify path uses an independent
-                            // softvol ("notifyvol") — muting mysoftvol
-                            // can't affect our own playback. Also, unlike
-                            // mphelper pause, this is a persistent ALSA
-                            // mixer value, not app-level playback state, so
-                            // it isn't reset by mediaplayer's internal
-                            // pause/unpause dance when it opens a new track
-                            // (fix round 11's finding).
+                            // call to it silently failed) is kept as a
+                            // best-effort layer; confirmed live (fix round
+                            // 14) not to be sufficient alone — see the
+                            // Master Volume mute below for the mechanism
+                            // that actually works. /etc/asound.conf routes
+                            // pcm.!default (factory) through a softvol
+                            // control named "mysoftvol" before the shared
+                            // dmixer, while our own aplay -D notify path
+                            // uses an independent softvol ("notifyvol") —
+                            // muting mysoftvol can't affect our own
+                            // playback. Also, unlike mphelper pause, this
+                            // is a persistent ALSA mixer value, not
+                            // app-level playback state, so it isn't reset
+                            // by mediaplayer's internal pause/unpause dance
+                            // when it opens a new track (fix round 11's
+                            // finding).
                             let _ = open_xiaoai::utils::shell::run_shell(
                                 "amixer -c 0 set mysoftvol 0 2>/dev/null"
                             ).await;
@@ -487,6 +535,18 @@ impl AppClient {
                             // mutes everything. Read-and-restore, not
                             // hardcoded — this is a hardware-calibrated
                             // baseline, not a user-adjustable level.
+                            // Read, validate, and save Master Volume
+                            // before muting it. Fail OPEN (skip the mute
+                            // entirely) if no restore value can be
+                            // established — muting with nothing to
+                            // restore to would leave the device silent
+                            // with no recovery path, a real failure mode
+                            // found in final review. Only save when
+                            // nothing is already saved, and never save 0:
+                            // re-entering this branch while an earlier
+                            // cycle is still muted would otherwise read
+                            // back our own mute and permanently latch 0
+                            // as the "baseline" for every future restore.
                             let master_vol_read = open_xiaoai::utils::shell::run_shell(
                                 "amixer -c 0 cget numid=1"
                             ).await;
@@ -504,18 +564,27 @@ impl AppClient {
                                     .and_then(|v| v.split(',').next())
                                     .and_then(|v| v.trim().parse::<i32>().ok())
                             });
-                            if let Some(v) = master_vol_parsed {
-                                *MASTER_VOL_SAVED.lock().await = Some(v);
+                            let have_restore_value = {
+                                let mut saved = MASTER_VOL_SAVED.lock().await;
+                                if saved.is_none() {
+                                    if let Some(v) = master_vol_parsed {
+                                        if v > 0 {
+                                            *saved = Some(v);
+                                        }
+                                    }
+                                }
+                                saved.is_some()
+                            };
+                            if have_restore_value {
+                                let _ = open_xiaoai::utils::shell::run_shell(
+                                    "amixer -c 0 cset numid=1 0,0 2>/dev/null"
+                                ).await;
                             }
-                            let _ = open_xiaoai::utils::shell::run_shell(
-                                "amixer -c 0 cset numid=1 0,0 2>/dev/null"
-                            ).await;
 
                             // Mark the next ASR result as kws-originated
                             // (Task 4 consumes and clears this).
                             *kws_triggered_clone.lock().await = true;
                             *mphelper_paused_clone.lock().await = true;
-                            *answer_synthesis_started_clone.lock().await = false;
 
                             // Trigger a real factory ASR cycle without the
                             // real wake word.
@@ -540,6 +609,11 @@ impl AppClient {
         self.kws_monitor.stop().await;
         self.button_monitor.stop().await;
         self.syslog_monitor.stop().await;
+        // dispose() stops the syslog monitor above, which is the only
+        // normal path that restores audio on the real completion signal
+        // — if a cycle was still muted when the WS disconnected (found in
+        // final review), nothing would otherwise ever undo it.
+        restore_factory_audio(&self.mphelper_paused, &self.answer_synthesis_started).await;
     }
 }
 
@@ -624,6 +698,18 @@ async fn on_event(event: Event) -> Result<(), AppError> {
 async fn on_stream(stream: Stream) -> Result<(), AppError> {
     let Stream { tag, bytes, .. } = stream;
     if tag.as_str() == "play" {
+        // Same safety backstop as start_play — if audio can arrive via
+        // this streamed path without a preceding start_play RPC, it must
+        // not play into a still-muted codec (final review finding).
+        if let Some(mv) = MASTER_VOL_SAVED.lock().await.take() {
+            let _ = open_xiaoai::utils::shell::run_shell(
+                "ubus -t 1 call mediaplayer player_play_operation '{\"action\":\"stop\"}' 2>/dev/null"
+            ).await;
+            let _ = open_xiaoai::utils::shell::run_shell(&format!(
+                "amixer -c 0 cset numid=1 {},{} 2>/dev/null",
+                mv, mv
+            )).await;
+        }
         let _ = AudioPlayer::instance().play(bytes).await;
     }
     Ok(())

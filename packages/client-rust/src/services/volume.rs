@@ -57,8 +57,11 @@ impl VolumeControl {
         // NOT attempt to gate factory here — factorygatevol is not a real
         // ALSA control on this device (confirmed live: amixer errors
         // "Unable to find simple control 'factorygatevol',0"); it never
-        // worked. Muting factory's real control, mysoftvol, is handled
-        // per-cycle by the kws handler instead, not permanently at init.
+        // worked. mysoftvol is kept as a best-effort layer, muted
+        // per-cycle by the kws handler instead of permanently at init —
+        // confirmed live (fix round 14) not to be sufficient alone to
+        // gate factory's real TTS output; Master Volume (client.rs) is
+        // the mechanism that actually works.
         let _ = run_shell("aplay -d 0 /dev/null 2>/dev/null").await;
     }
 

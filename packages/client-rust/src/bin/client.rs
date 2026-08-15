@@ -22,6 +22,15 @@ use open_xiaoai::services::monitor::button::{ButtonEvent, ButtonMonitor};
 use open_xiaoai::services::monitor::instruction::InstructionMonitor;
 use open_xiaoai::services::volume::VolumeControl;
 
+/// Saved Master Playback Volume (numid=1) value while muted for a
+/// kws-triggered cycle, so start_play can force-restore it before our own
+/// answer plays. Master Volume is hardware-level and mutes ALL sources
+/// uniformly, including our own aplay-based playback — unlike mysoftvol,
+/// which only affects factory's own gain stage and was confirmed live
+/// (fix round 14) not to gate factory's actual TTS output at all.
+static MASTER_VOL_SAVED: std::sync::LazyLock<Mutex<Option<i32>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
 /// Check if the query should be handled by factory AI (simple daily questions).
 fn is_factory_ai_query(text: &str) -> bool {
     const PATTERNS: &[&str] = &[
@@ -317,6 +326,16 @@ impl AppClient {
                                         "amixer -c 0 set mysoftvol {} 2>/dev/null",
                                         vol
                                     )).await;
+                                    // Restore Master Volume (fix round 15).
+                                    // take() clears MASTER_VOL_SAVED so
+                                    // start_play's own safety-restore
+                                    // becomes a no-op if it runs after this.
+                                    if let Some(mv) = MASTER_VOL_SAVED.lock().await.take() {
+                                        let _ = open_xiaoai::utils::shell::run_shell(&format!(
+                                            "amixer -c 0 cset numid=1 {},{} 2>/dev/null",
+                                            mv, mv
+                                        )).await;
+                                    }
                                 }
                             }
                         }
@@ -389,7 +408,7 @@ impl AppClient {
                                         break;
                                     }
                                     let _ = open_xiaoai::utils::shell::run_shell(
-                                        "mphelper pause; amixer -c 0 set mysoftvol 0 2>/dev/null"
+                                        "mphelper pause; amixer -c 0 set mysoftvol 0 2>/dev/null; amixer -c 0 cset numid=1 0,0 2>/dev/null"
                                     ).await;
                                 }
                             });
@@ -438,6 +457,43 @@ impl AppClient {
                                 "aplay -D notify /data/open-xiaoai/sounds/notice.wav 2>/dev/null &"
                             ).await;
 
+                            // Mute the real hardware gain (fix round 15).
+                            // mysoftvol above does not actually gate
+                            // factory's TTS output (confirmed live, fix
+                            // round 14: held at 0 for the full answer
+                            // window, factory still audible) — Master
+                            // Playback Volume is downstream of every
+                            // software mixing path and does gate it
+                            // (confirmed live: silenced factory AND our own
+                            // ack beep). Placed after the beep call above
+                            // so the beep is already queued before this
+                            // mutes everything. Read-and-restore, not
+                            // hardcoded — this is a hardware-calibrated
+                            // baseline, not a user-adjustable level.
+                            let master_vol_read = open_xiaoai::utils::shell::run_shell(
+                                "amixer -c 0 cget numid=1"
+                            ).await;
+                            // Extracted into an owned Option<i32> (Send)
+                            // before the lock().await below — the raw
+                            // Result<_, Box<dyn Error>> from run_shell is
+                            // not Send, and holding it across an await
+                            // point here breaks the Send bound required by
+                            // KwsMonitor::start's callback future.
+                            let master_vol_parsed = master_vol_read.ok().and_then(|res| {
+                                res.stdout
+                                    .lines()
+                                    .find(|l| l.trim_start().starts_with(": values="))
+                                    .and_then(|l| l.trim_start().strip_prefix(": values="))
+                                    .and_then(|v| v.split(',').next())
+                                    .and_then(|v| v.trim().parse::<i32>().ok())
+                            });
+                            if let Some(v) = master_vol_parsed {
+                                *MASTER_VOL_SAVED.lock().await = Some(v);
+                            }
+                            let _ = open_xiaoai::utils::shell::run_shell(
+                                "amixer -c 0 cset numid=1 0,0 2>/dev/null"
+                            ).await;
+
                             // Mark the next ASR result as kws-originated
                             // (Task 4 consumes and clears this).
                             *kws_triggered_clone.lock().await = true;
@@ -476,6 +532,19 @@ async fn get_version(_: Request) -> Result<Response, AppError> {
 }
 
 async fn start_play(request: Request) -> Result<Response, AppError> {
+    // Safety backstop (fix round 15): Master Playback Volume mutes ALL
+    // sources uniformly, including our own playback. If a kws-triggered
+    // cycle muted it and the real-completion signal hasn't restored it
+    // yet, force-restore it now — our own answer must never be silenced
+    // by a timing race between factory's completion signal and our own
+    // answer's arrival. take() is idempotent with the syslog watcher's
+    // own restore: whichever runs first wins, the other is a no-op.
+    if let Some(mv) = MASTER_VOL_SAVED.lock().await.take() {
+        let _ = open_xiaoai::utils::shell::run_shell(&format!(
+            "amixer -c 0 cset numid=1 {},{} 2>/dev/null",
+            mv, mv
+        )).await;
+    }
     let config = request
         .payload
         .and_then(|payload| serde_json::from_value::<AudioConfig>(payload).ok());

@@ -557,6 +557,17 @@ async fn start_play(request: Request) -> Result<Response, AppError> {
     // answer's arrival. take() is idempotent with the syslog watcher's
     // own restore: whichever runs first wins, the other is a no-op.
     if let Some(mv) = MASTER_VOL_SAVED.lock().await.take() {
+        // Restoring volume alone isn't enough (fix round 16): if
+        // factory's real completion signal hasn't fired yet, it may
+        // still be mid-answer (confirmed live: a long, multi-segment
+        // factory answer overlapped audibly with our own once our own
+        // answer became ready first). Force-stop factory's playback —
+        // the same interrupt already used at wake time — so it can't
+        // still be speaking once volume comes back up, regardless of
+        // whether its completion signal has fired.
+        let _ = open_xiaoai::utils::shell::run_shell(
+            "ubus -t 1 call mediaplayer player_play_operation '{\"action\":\"stop\"}' 2>/dev/null"
+        ).await;
         let _ = open_xiaoai::utils::shell::run_shell(&format!(
             "amixer -c 0 cset numid=1 {},{} 2>/dev/null",
             mv, mv

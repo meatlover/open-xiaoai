@@ -408,8 +408,25 @@ impl AppClient {
                                         break;
                                     }
                                     let _ = open_xiaoai::utils::shell::run_shell(
-                                        "mphelper pause; amixer -c 0 set mysoftvol 0 2>/dev/null; amixer -c 0 cset numid=1 0,0 2>/dev/null"
+                                        "mphelper pause; amixer -c 0 set mysoftvol 0 2>/dev/null"
                                     ).await;
+                                    // Only re-mute Master Volume while a
+                                    // restore is still owed. Without this
+                                    // check, this loop would re-mute the
+                                    // hardware on its next 100ms tick even
+                                    // after start_play's safety backstop
+                                    // (Step 5) has already restored it to
+                                    // play our own answer — silencing that
+                                    // answer mid-playback. mphelper_paused
+                                    // alone can't gate this: it's only
+                                    // cleared by factory's completion
+                                    // signal, unrelated to when our own
+                                    // answer actually arrives.
+                                    if MASTER_VOL_SAVED.lock().await.is_some() {
+                                        let _ = open_xiaoai::utils::shell::run_shell(
+                                            "amixer -c 0 cset numid=1 0,0 2>/dev/null"
+                                        ).await;
+                                    }
                                 }
                             });
 

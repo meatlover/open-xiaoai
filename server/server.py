@@ -397,11 +397,18 @@ async def stream_chat_completion_cli(
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise RuntimeError(f"AI-gateway CLI timed out after {timeout}s")
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"AI-gateway CLI timed out after {timeout}s")
+    finally:
+        # Guarantee the subprocess never leaks, regardless of how we leave
+        # this block: our own timeout above, the caller cancelling this
+        # generator from the outside (asyncio.CancelledError / GeneratorExit
+        # propagating through token_iter.aclose()), or any other exception.
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
 
     if proc.returncode != 0:
         raise RuntimeError(f"AI-gateway CLI exited {proc.returncode}: {stderr.decode(errors='replace')[:500]}")

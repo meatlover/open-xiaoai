@@ -109,6 +109,30 @@ struct AppClient {
     syslog_monitor: FileMonitor,
 }
 
+fn build_tls_client_config(
+    ca_pem: &[u8],
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> Result<rustls::ClientConfig, AppError> {
+    let mut root_store = rustls::RootCertStore::empty();
+    for cert in rustls_pemfile::certs(&mut &ca_pem[..]) {
+        root_store.add(cert.map_err(|e| AppError::from(e.to_string()))?)
+            .map_err(|e| AppError::from(e.to_string()))?;
+    }
+
+    let certs: Vec<_> = rustls_pemfile::certs(&mut &cert_pem[..])
+        .collect::<Result<_, _>>()
+        .map_err(|e| AppError::from(e.to_string()))?;
+    let key = rustls_pemfile::private_key(&mut &key_pem[..])
+        .map_err(|e| AppError::from(e.to_string()))?
+        .ok_or_else(|| AppError::from("no private key found in client.key".to_string()))?;
+
+    rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_client_auth_cert(certs, key)
+        .map_err(|e| AppError::from(e.to_string()))
+}
+
 impl AppClient {
     pub fn new() -> Self {
         Self {
@@ -124,8 +148,25 @@ impl AppClient {
     }
 
     pub async fn connect(&self, url: &str) -> Result<WsStream, AppError> {
-        let (ws_stream, _) = connect_async(url).await?;
-        Ok(WsStream::Client(ws_stream))
+        if let Some(_) = url.strip_prefix("wss://") {
+            let cert_dir = std::path::Path::new("/data/open-xiaoai/certs");
+            let ca_pem = std::fs::read(cert_dir.join("server-ca.crt"))
+                .map_err(|e| AppError::from(format!("read server-ca.crt: {e}")))?;
+            let cert_pem = std::fs::read(cert_dir.join("client.crt"))
+                .map_err(|e| AppError::from(format!("read client.crt: {e}")))?;
+            let key_pem = std::fs::read(cert_dir.join("client.key"))
+                .map_err(|e| AppError::from(format!("read client.key: {e}")))?;
+
+            let tls_config = build_tls_client_config(&ca_pem, &cert_pem, &key_pem)?;
+            let connector = tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(tls_config));
+            let (ws_stream, _) = tokio_tungstenite::connect_async_tls_with_config(
+                url, None, false, Some(connector),
+            ).await?;
+            Ok(WsStream::Client(ws_stream))
+        } else {
+            let (ws_stream, _) = connect_async(url).await?;
+            Ok(WsStream::Client(ws_stream))
+        }
     }
 
     pub async fn run(&mut self) {
@@ -723,6 +764,21 @@ mod tests {
         assert!(!is_custom_wake_word(""));
         assert!(!is_custom_wake_word("天气怎么样"));
         assert!(!is_custom_wake_word("小虎"));
+    }
+}
+
+#[cfg(test)]
+mod tls_tests {
+    use super::*;
+
+    #[test]
+    fn build_tls_config_loads_client_identity() {
+        // Uses the repo's own test fixtures — see Step 2b for fixture generation.
+        let ca = std::fs::read("test-fixtures/server-ca.crt").expect("read test CA");
+        let cert = std::fs::read("test-fixtures/client.crt").expect("read test client cert");
+        let key = std::fs::read("test-fixtures/client.key").expect("read test client key");
+        let cfg = build_tls_client_config(&ca, &cert, &key);
+        assert!(cfg.is_ok(), "TLS config should build from valid PEM fixtures: {:?}", cfg.err());
     }
 }
 

@@ -77,8 +77,9 @@ def _parse_providers() -> List[Dict[str, str]]:
             if not name:
                 continue
             upper = name.upper().replace("-", "_")
+            mode = os.getenv(f"LLM_{upper}_MODE", "http")
             base_url = os.getenv(f"LLM_{upper}_BASE_URL", "")
-            if not base_url:
+            if mode != "cli" and not base_url:
                 logger.warning("Provider '%s' missing LLM_%s_BASE_URL, skipping", name, upper)
                 continue
             providers.append({
@@ -90,6 +91,10 @@ def _parse_providers() -> List[Dict[str, str]]:
                 "no_system_prompt": os.getenv(f"LLM_{upper}_NO_SYSTEM_PROMPT", "") == "1",
                 "user": os.getenv(f"LLM_{upper}_USER", ""),
                 "no_proxy": os.getenv(f"LLM_{upper}_NO_PROXY", "") == "1",
+                "mode": mode,
+                "cli_bin": os.getenv(f"LLM_{upper}_CLI_BIN", ""),
+                "agent_id": os.getenv(f"LLM_{upper}_AGENT_ID", ""),
+                "timeout_s": float(os.getenv(f"LLM_{upper}_TIMEOUT_S", "30")),
             })
 
     # Fallback: legacy single-provider env vars
@@ -364,6 +369,74 @@ async def stream_chat_completion(
             tool_calls_out.append(accumulated_tool_calls[idx])
 
 
+async def stream_chat_completion_cli(
+    provider: Dict[str, str],
+    messages: List[Dict],
+) -> AsyncGenerator[str, None]:
+    """Run one turn through the AI-gateway CLI (no REST API exists in this
+    gateway version — see server.py's design notes). Unlike
+    stream_chat_completion, this blocks until the whole reply is ready; no
+    incremental streaming is available from the CLI. Yields the full reply
+    as a single "token" — the sentence-splitting/TTS pipeline downstream
+    still works unchanged, since it operates on whatever text arrives,
+    one token or many.
+    """
+    prompt = _flatten_messages_to_prompt(messages)
+    session_key = f"agent:{provider['agent_id']}:oneshot-{uuid.uuid4().hex[:12]}"
+    cmd = [
+        provider["cli_bin"], "agent",
+        "--agent", provider["agent_id"],
+        "--message", prompt,
+        "--session-key", session_key,
+        "--json",
+    ]
+    timeout = float(provider.get("timeout_s", 30.0))
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"AI-gateway CLI timed out after {timeout}s")
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"AI-gateway CLI exited {proc.returncode}: {stderr.decode(errors='replace')[:500]}")
+
+    result = json.loads(stdout.decode())
+    if result.get("status") != "ok":
+        raise RuntimeError(f"AI-gateway CLI reported failure: {result}")
+
+    payloads = result.get("result", {}).get("payloads", [])
+    reply_text = "".join(p.get("text", "") for p in payloads if p.get("text"))
+    if reply_text:
+        yield reply_text
+
+
+def _flatten_messages_to_prompt(messages: List[Dict]) -> str:
+    """Collapse an OpenAI-style messages list into one prompt string — the
+    CLI takes a single message body, not a chat-messages array. Each turn
+    is labeled so the model can distinguish its own prior replies from the
+    user's; the system prompt (if present) is prepended once, unlabeled.
+    """
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if not content:
+            continue
+        if role == "system":
+            parts.append(content)
+        elif role == "assistant":
+            parts.append(f"[你之前的回答] {content}")
+        else:
+            parts.append(content)
+    return "\n\n".join(parts)
+
+
 # --- WebSocket / RPC / Audio streaming ---
 
 async def send_json(websocket, payload: Dict[str, Any]) -> None:
@@ -547,10 +620,13 @@ async def _stream_and_enqueue_tts(
         first_token_received = False
         deadline = asyncio.get_event_loop().time() + LLM_FIRST_TOKEN_TIMEOUT
 
-        token_iter = stream_chat_completion(
-            provider, messages,
-            tools=use_tools, tool_calls_out=tool_calls_out,
-        ).__aiter__()
+        if provider.get("mode") == "cli":
+            token_iter = stream_chat_completion_cli(provider, messages).__aiter__()
+        else:
+            token_iter = stream_chat_completion(
+                provider, messages,
+                tools=use_tools, tool_calls_out=tool_calls_out,
+            ).__aiter__()
 
         try:
             while True:
